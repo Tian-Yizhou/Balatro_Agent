@@ -28,27 +28,12 @@ This project has two parts:
 
 **Why is Balatro a good environment for agent planning research?**
 
-Consider this situation: you are in Ante 3, facing the Boss Blind with a target score of 4,000. You have 4 hands and 3 discards. Your hand is:
+Consider a state where your current hand cannot satisfy the score requirement, and you have one discard remaining. The agent faces a high-dimensional planning problem:
 
-```
-[K of spades] [K of hearts] [7 of diamonds] [4 of clubs] [J of spades] [10 of hearts] [3 of diamonds] [9 of clubs]
-```
+- **Option A (The Safe Play):** Discard for a **Flush**. Your current Jokers provide a mult boost that guarantees current round win immediately. This ensures survival but offers zero long-term growth.
+- **Option B (The Scaling Play):** Discard for a **Straight**. While this hand won't win the round in one go, you have a "Scaling Joker" (like *Square Joker* or *Bus*) that permanently increases its power whenever a Straight is played.
 
-Your Jokers are:
-```
-[Greedy Joker]: +3 Mult for each Diamond card played
-[Banner]: +30 Chips for each discard remaining
-```
-
-A naive agent plays the obvious pair of Kings for a safe ~60 points. But a strategic agent reasons differently:
-
-- *"I have Banner, which gives +30 chips per discard remaining. If I play now with 3 discards left, that's +90 chips. But if I use discards, I lose that bonus."*
-- *"I have Greedy Joker, which rewards Diamonds. My current hand only has 7 of diamonds and 3 of diamonds. I could discard non-diamond cards and fish for a Diamond flush -- but that sacrifices Banner's bonus."*
-- *"The target is 4,000. I have 4 hands. I need ~1,000 per hand on average. A pair of Kings scores about 50. I need to do much better -- should I risk discards to chase a stronger hand type, or preserve discards for Banner's bonus?"*
-
-This single decision involves **probability estimation** (what's the chance of drawing diamonds?), **expected value calculation** (is the flush attempt worth the Banner loss?), **joker synergy reasoning** (which Joker benefits more from my play style?), and **multi-turn planning** (I have 4 hands to reach 4,000 -- how should I budget them?).
-
-Unlike Texas Hold'em, which focuses on adversarial bluffing, Balatro isolates the **planning and reasoning** challenge: there is no opponent to model, but the combinatorial space of Joker interactions and the exponentially growing score targets demand genuine strategic thinking.
+**Reasoning and Planning:** An agent must evaluate if its current health (hands remaining) and deck probability allow it to take the "suboptimal" short-term play (the Straight) to ensure its "scaling" is high enough to survive the exponential difficulty of later Antes. This requires the model to value **future state utility** over **immediate reward.**
 
 ## Tech Stack
 
