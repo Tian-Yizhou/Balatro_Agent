@@ -14,7 +14,7 @@ This project has two parts:
 
 | Component | Status |
 |-----------|--------|
-| Core game engine (cards, hand evaluation, jokers, blinds, shop, game state) | In progess |
+| Core game engine (cards, hand evaluation, jokers, blinds, shop, game state) | In progress |
 | Gymnasium environment wrapper (observation encoding, action masking) | In progress |
 | Difficulty configs (easy/medium/hard YAML presets) | In progress |
 | Baseline agents (random, heuristic) | Waiting |
