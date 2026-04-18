@@ -20,7 +20,7 @@ from balatro_gym.envs.configs import GameConfig
 
 class TestActionSpaceConstants:
     def test_total_actions(self):
-        assert TOTAL_ACTIONS == 445
+        assert TOTAL_ACTIONS == 446
 
     def test_card_subsets_count(self):
         assert len(CARD_SUBSETS) == 218
@@ -29,9 +29,9 @@ class TestActionSpaceConstants:
         assert PLAY_OFFSET == 0
         assert DISCARD_OFFSET == 218
         assert BUY_OFFSET == 436
-        assert SELL_OFFSET == 438
-        assert REROLL_ACTION == 443
-        assert SKIP_ACTION == 444
+        assert SELL_OFFSET == 439
+        assert REROLL_ACTION == 444
+        assert SKIP_ACTION == 445
 
 
 class TestEnvCreation:
@@ -39,7 +39,7 @@ class TestEnvCreation:
         config = GameConfig.easy(seed=42)
         env = BalatroEnv(config=config)
         assert env.observation_space.shape[0] > 0
-        assert env.action_space.n == 445
+        assert env.action_space.n == 446
 
     def test_create_with_preset(self):
         env = BalatroEnv(config_preset="easy")
@@ -147,11 +147,17 @@ class TestObservation:
         assert obs.min() >= -1.0
         assert obs.max() <= 10.0
 
-    def test_hand_bitmap(self):
+    def test_hand_card_encoding(self):
         env = BalatroEnv(config=GameConfig.easy(seed=42))
         obs, _ = env.reset(seed=42)
-        hand_bitmap = obs[:52]
-        assert hand_bitmap.sum() == 8  # 8 cards in hand
+        from balatro_gym.envs.balatro_env import CARD_FEATURE_DIM, MAX_HAND_SIZE
+        # Each of the 8 card slots is CARD_FEATURE_DIM (68) wide.
+        # First 52 dims of each slot = one-hot for which card.
+        # With 8 cards in hand, each slot should have exactly one card-id bit set.
+        for slot in range(MAX_HAND_SIZE):
+            start = slot * CARD_FEATURE_DIM
+            card_one_hot = obs[start:start + 52]
+            assert card_one_hot.sum() == 1.0, f"Slot {slot} should have exactly one card"
 
     def test_phase_encoding(self):
         env = BalatroEnv(config=GameConfig.easy(seed=42))
@@ -246,3 +252,9 @@ class TestRender:
         assert "Ante" in text
         assert "Score" in text
         assert "Hand:" in text
+
+    def test_render_human_returns_none(self):
+        env = BalatroEnv(config=GameConfig.easy(seed=42), render_mode="human")
+        env.reset(seed=42)
+        result = env.render()
+        assert result is None
