@@ -17,6 +17,45 @@ Technical decisions, implementation notes, and key details for the Balatro-Agent
 
 ---
 
+## 2026-04-17: Engine Reconstruction from Lua Source
+
+**What changed**: Reconstructed all core engine modules by reading the Balatro Lua source code (card.lua, game.lua, blind.lua, state_events.lua, misc_functions.lua) as a specification reference. Key corrections:
+
+### Scoring Pipeline (game_state.py)
+The scoring pipeline was fundamentally restructured to match Lua's `evaluate_play`:
+1. **3-phase scoring**: Individual card effects → held card effects → main joker effects (was: flat joker iteration)
+2. **Per-card joker triggers**: Suit-based jokers (Greedy/Lusty/etc.), Fibonacci, Even Steven, Odd Todd, Scholar, Business Card now trigger per scoring card in `on_individual()` context (was: summed over all cards at once)
+3. **Poker hand sub-types**: `_get_poker_hands()` builds a dict of all contained hand types (e.g., Full House contains Pair + Three of a Kind). Jolly/Zany/Duo/Trio/Family check this dict, matching Lua's `next(context.poker_hands[type])`.
+4. **Before/After phases**: Runner and Ride the Bus update state in `on_before()` before scoring. Ice Cream decrements chips in `on_after()` after scoring.
+
+### Blind System (blind.py)
+- **Score targets**: Now use `get_blind_amount(ante) * blind.mult` matching Lua exactly. Base amounts: [300, 800, 2000, 5000, 11000, 20000, 35000, 50000]. Blind mults: Small=1.0, Big=1.5, Boss varies (2.0 typical, The Wall=4.0).
+- **Boss blinds**: Added BlindDef dataclass with name, dollars, mult. Implemented The Flint (halves base chips/mult with rounding), The Hook (discards 2 random cards), The Needle (1 hand only), The Wall (4x mult).
+- **Economy**: Fixed to match Lua — blind.dollars (3/4/5) + $1 per unused hand + interest (was: win_bonus = 3 + blind_index, which was wrong).
+
+### Joker System (joker.py)
+- **Architecture change**: Replaced single `on_score()` method with context-specific methods: `on_before()`, `on_individual()`, `on_held_individual()`, `on_main()`, `on_after()`. This matches Lua's context-based calculate_joker dispatch.
+- **Odd Todd**: Fixed to +31 chips (was +30).
+- **Half Joker**: Now checks `len(full_hand) <= 3` (was checking scoring_cards).
+- **Ceremonial Dagger**: Corrected — gains mult from slicing right neighbor at blind start, not from blind score target.
+- **Supernova**: Uses global hand type play counts, incremented before scoring (matching Lua).
+- **Raised Fist**: Moved to `on_held_individual()` context, uses 2x nominal of lowest held card.
+- **Stencil**: X-mult of (empty_slots + 1).
+
+### Card System (card.py)
+- `chip_value` now returns 0 for debuffed (face_down) cards, matching `Card:get_chip_bonus()` in Lua.
+- Added `nominal` property (raw chip value ignoring debuff) for Raised Fist.
+- Added `id` property mapping to Lua's card.base.id (2-14, Ace=14).
+
+### Verification
+- All hand base scores match Lua exactly
+- All blind base amounts match Lua exactly  
+- Score targets match Lua's formula
+- Economy matches Lua's evaluate_round
+- 100 random-agent games run with zero crashes
+
+---
+
 ## Core Engine Implementation Status
 
 All modules in `balatro_gym/core/` are implemented. Key details:

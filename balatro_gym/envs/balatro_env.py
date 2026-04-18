@@ -1,9 +1,12 @@
 """Gymnasium environment wrapper for the Balatro card game.
 
 Wraps the core GameState with a Gymnasium-compatible API:
-- Discrete(445) action space with action masking
+- Discrete action space with action masking
 - Flat observation vector (normalized floats)
 - Reward shaping for RL training
+
+Designed for compatibility with sb3-contrib MaskablePPO and standard Gymnasium
+tooling (env_checker, VecEnv wrappers, etc.).
 """
 
 from __future__ import annotations
@@ -16,8 +19,10 @@ import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
 
+from balatro_gym.core.card import Enhancement, Edition, Seal
 from balatro_gym.core.game_state import GamePhase, GameState
 from balatro_gym.core.joker import get_all_joker_ids
+from balatro_gym.core.consumable import get_all_consumable_ids, ConsumableType
 from balatro_gym.envs.configs import GameConfig
 
 
@@ -32,29 +37,58 @@ for _size in range(1, 6):
 
 NUM_PLAY_ACTIONS = len(CARD_SUBSETS)       # 218
 NUM_DISCARD_ACTIONS = len(CARD_SUBSETS)    # 218
-NUM_BUY_ACTIONS = 2                        # shop slot 0, 1
+NUM_BUY_ACTIONS = 3                        # shop slot 0, 1 (jokers) + 1 (consumable)
 NUM_SELL_ACTIONS = 5                       # joker slot 0-4
 NUM_REROLL = 1
 NUM_SKIP = 1
 
 PLAY_OFFSET = 0                                        # 0-217
 DISCARD_OFFSET = NUM_PLAY_ACTIONS                      # 218-435
-BUY_OFFSET = DISCARD_OFFSET + NUM_DISCARD_ACTIONS      # 436-437
-SELL_OFFSET = BUY_OFFSET + NUM_BUY_ACTIONS             # 438-442
-REROLL_ACTION = SELL_OFFSET + NUM_SELL_ACTIONS          # 443
-SKIP_ACTION = REROLL_ACTION + NUM_REROLL                # 444
+BUY_OFFSET = DISCARD_OFFSET + NUM_DISCARD_ACTIONS      # 436-438
+SELL_OFFSET = BUY_OFFSET + NUM_BUY_ACTIONS             # 439-443
+REROLL_ACTION = SELL_OFFSET + NUM_SELL_ACTIONS          # 444
+SKIP_ACTION = REROLL_ACTION + NUM_REROLL                # 445
 
-TOTAL_ACTIONS = SKIP_ACTION + NUM_SKIP                  # 445
+TOTAL_ACTIONS = SKIP_ACTION + NUM_SKIP                  # 446
+
+# Card property counts for observation encoding
+NUM_ENHANCEMENTS = len(Enhancement)    # 8
+NUM_EDITIONS = len(Edition)            # 3
+NUM_SEALS = len(Seal)                  # 4
+
+# Per-card feature size: 52 (which card) + 8 (enhancement) + 3 (edition) + 4 (seal) + 1 (face_down)
+CARD_FEATURE_DIM = 52 + NUM_ENHANCEMENTS + NUM_EDITIONS + NUM_SEALS + 1  # 68
+
+# Max hand slots
+MAX_HAND_SIZE = 8
+MAX_CONSUMABLE_SLOTS = 2
+NUM_HAND_TYPES = 12  # for hand level encoding
 
 
 class BalatroEnv(gym.Env):
-    """Gymnasium environment for simplified Balatro.
+    """Gymnasium environment for Balatro.
 
-    Observation: flat float32 vector (all values in [0, 1] or small positive range).
-    Action: Discrete(445) with action masking via `action_masks()`.
+    Observation: flat float32 vector encoding hand cards (with properties),
+    jokers, consumables, game scalars, shop state, and hand levels.
+
+    Action: Discrete(446) with action masking via ``action_masks()``.
+    Compatible with sb3-contrib ``MaskablePPO``.
+
+    Registered IDs:
+        - ``Balatro-v0`` (medium difficulty, default)
+        - ``Balatro-Easy-v0``
+        - ``Balatro-Medium-v0``
+        - ``Balatro-Hard-v0``
+
+    Example::
+
+        import gymnasium as gym
+        env = gym.make("Balatro-v0")
+        obs, info = env.reset()
+        mask = info["action_mask"]
     """
 
-    metadata = {"render_modes": ["human", "ansi"]}
+    metadata = {"render_modes": ["human", "ansi"], "render_fps": 1}
 
     def __init__(
         self,
@@ -86,6 +120,14 @@ class BalatroEnv(gym.Env):
         self._num_joker_types = len(self._joker_ids)
         self._joker_one_hot_size = self._num_joker_types + 1  # +1 for empty
 
+        # Build consumable ID -> index mapping
+        self._consumable_ids = sorted(self.config.consumable_pool)
+        self._consumable_id_to_idx: dict[str, int] = {
+            cid: i for i, cid in enumerate(self._consumable_ids)
+        }
+        self._num_consumable_types = len(self._consumable_ids)
+        self._consumable_one_hot_size = self._num_consumable_types + 1  # +1 for empty
+
         # Compute observation dimension
         self._obs_dim = self._compute_obs_dim()
 
@@ -106,21 +148,33 @@ class BalatroEnv(gym.Env):
         self._prev_blinds_beaten = 0
 
     def _compute_obs_dim(self) -> int:
-        """Calculate total observation vector length."""
+        """Calculate total observation vector length.
+
+        Layout:
+            [0]    Hand cards: MAX_HAND_SIZE * CARD_FEATURE_DIM
+            [1]    Joker slots: max_jokers * joker_one_hot_size
+            [2]    Consumable slots: MAX_CONSUMABLE_SLOTS * consumable_one_hot_size
+            [3]    Hand levels: NUM_HAND_TYPES * 3 (level, chips, mult normalized)
+            [4-14] Scalar features (money, ante, blind, score, etc.)
+            [15]   Shop: shop_slots * (joker_one_hot_size + 2)
+            [16]   Shop consumable slot: 1 * (consumable_one_hot_size + 2)
+        """
         dim = 0
-        dim += 52                                  # hand bitmap
-        dim += 52                                  # face-down flags
+        dim += MAX_HAND_SIZE * CARD_FEATURE_DIM               # hand cards with properties
         dim += self.config.max_jokers * self._joker_one_hot_size  # joker slots
-        dim += 1                                   # money (normalized)
-        dim += 1                                   # ante (normalized)
-        dim += 3                                   # blind type one-hot
-        dim += 1                                   # score target (log-normalized)
-        dim += 1                                   # score progress (ratio)
-        dim += 1                                   # hands remaining (normalized)
-        dim += 1                                   # discards remaining (normalized)
-        dim += 1                                   # deck size (normalized)
-        dim += 2                                   # phase one-hot (play, shop)
-        dim += self.config.shop_slots * (self._joker_one_hot_size + 2)  # shop
+        dim += MAX_CONSUMABLE_SLOTS * self._consumable_one_hot_size  # consumable slots
+        dim += NUM_HAND_TYPES * 3                              # hand levels
+        dim += 1                                               # money (normalized)
+        dim += 1                                               # ante (normalized)
+        dim += 3                                               # blind type one-hot
+        dim += 1                                               # score target (log-normalized)
+        dim += 1                                               # score progress (ratio)
+        dim += 1                                               # hands remaining (normalized)
+        dim += 1                                               # discards remaining (normalized)
+        dim += 1                                               # deck size (normalized)
+        dim += 2                                               # phase one-hot (play, shop)
+        dim += self.config.shop_slots * (self._joker_one_hot_size + 2)  # shop joker slots
+        dim += 1 * (self._consumable_one_hot_size + 2)        # shop consumable slot
         return dim
 
     # -------------------------------------------------------------------
@@ -133,10 +187,26 @@ class BalatroEnv(gym.Env):
         seed: int | None = None,
         options: dict[str, Any] | None = None,
     ) -> tuple[np.ndarray, dict[str, Any]]:
+        """Reset the environment to a new game.
+
+        Args:
+            seed: RNG seed for reproducibility.
+            options: Unused, for Gymnasium API compatibility.
+
+        Returns:
+            (observation, info) tuple. ``info["action_mask"]`` contains the
+            boolean action mask for the initial state.
+        """
         super().reset(seed=seed)
 
-        # Create a fresh game state
-        game_seed = seed if seed is not None else self.config.seed
+        # Use explicit seed, or derive from Gymnasium's np_random (which was
+        # seeded by super().reset) for deterministic replay.
+        if seed is not None:
+            game_seed = seed
+        elif self.np_random is not None:
+            game_seed = int(self.np_random.integers(0, 2**31))
+        else:
+            game_seed = self.config.seed
         self._game = GameState(
             num_antes=self.config.num_antes,
             hands_per_round=self.config.hands_per_round,
@@ -146,8 +216,10 @@ class BalatroEnv(gym.Env):
             starting_money=self.config.starting_money,
             available_joker_ids=list(self.config.joker_pool),
             starting_joker_ids=list(self.config.starting_joker_ids),
+            available_consumable_ids=list(self.config.consumable_pool),
             shop_slots=self.config.shop_slots,
             reroll_base_cost=self.config.reroll_base_cost,
+            consumable_slots=self.config.consumable_slots,
             seed=game_seed,
         )
         self._game.reset()
@@ -163,10 +235,17 @@ class BalatroEnv(gym.Env):
     def step(
         self, action: int
     ) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
+        """Take one step in the environment.
+
+        Args:
+            action: Integer action index (0 to TOTAL_ACTIONS-1).
+
+        Returns:
+            (observation, reward, terminated, truncated, info)
+        """
         assert self._game is not None, "Must call reset() before step()"
 
         reward = 0.0
-        prev_phase = self._game.phase
         prev_blinds = self._game.blinds_beaten
         prev_score = self._game.current_score
         score_target = self._game.score_target
@@ -210,10 +289,13 @@ class BalatroEnv(gym.Env):
         obs = self._encode_observation()
         info = self._build_info()
 
-        return obs, reward, terminated, False, info
+        return obs, float(reward), terminated, False, info
 
     def action_masks(self) -> np.ndarray:
-        """Return a boolean mask over the 445 actions. True = valid."""
+        """Return a boolean mask over actions. ``True`` = valid.
+
+        Compatible with sb3-contrib ``MaskablePPO``.
+        """
         mask = np.zeros(TOTAL_ACTIONS, dtype=bool)
 
         if self._game is None:
@@ -225,7 +307,6 @@ class BalatroEnv(gym.Env):
             can_discard = self._game.discards_remaining > 0
 
             for i, subset in enumerate(CARD_SUBSETS):
-                # Check all indices in subset are valid for current hand
                 if max(subset) < hand_size:
                     if can_play:
                         mask[PLAY_OFFSET + i] = True
@@ -233,15 +314,17 @@ class BalatroEnv(gym.Env):
                         mask[DISCARD_OFFSET + i] = True
 
         elif self._game.phase == GamePhase.SHOP:
-            # Buy actions
-            for slot_idx in range(self.config.shop_slots):
-                action_idx = BUY_OFFSET + slot_idx
-                if slot_idx < len(self._game.shop.offerings):
-                    offering = self._game.shop.offerings[slot_idx]
-                    if (not offering.sold
-                            and self._game.money >= offering.cost
-                            and len(self._game.jokers) < self._game.max_jokers):
-                        mask[action_idx] = True
+            # Buy actions — iterate over all offerings
+            for slot_idx in range(min(NUM_BUY_ACTIONS, len(self._game.shop.offerings))):
+                offering = self._game.shop.offerings[slot_idx]
+                if offering.sold or self._game.money < offering.cost:
+                    continue
+                if offering.item_type == "joker":
+                    if len(self._game.jokers) < self._game.max_jokers:
+                        mask[BUY_OFFSET + slot_idx] = True
+                elif offering.item_type == "consumable":
+                    if len(self._game.consumables) < self._game.consumable_slots:
+                        mask[BUY_OFFSET + slot_idx] = True
 
             # Sell actions
             for joker_idx in range(min(NUM_SELL_ACTIONS, len(self._game.jokers))):
@@ -254,7 +337,6 @@ class BalatroEnv(gym.Env):
             # Skip is always valid in shop
             mask[SKIP_ACTION] = True
 
-        # Game over / won: no valid actions
         return mask
 
     # -------------------------------------------------------------------
@@ -266,18 +348,15 @@ class BalatroEnv(gym.Env):
         assert self._game is not None
 
         if PLAY_OFFSET <= action < PLAY_OFFSET + NUM_PLAY_ACTIONS:
-            # Play a hand
             subset_idx = action - PLAY_OFFSET
             card_indices = list(CARD_SUBSETS[subset_idx])
             try:
                 self._game.play_hand(card_indices)
             except ValueError:
-                # Invalid action (shouldn't happen with proper masking)
                 return -0.01
             return 0.0
 
         elif DISCARD_OFFSET <= action < DISCARD_OFFSET + NUM_DISCARD_ACTIONS:
-            # Discard cards
             subset_idx = action - DISCARD_OFFSET
             card_indices = list(CARD_SUBSETS[subset_idx])
             try:
@@ -286,7 +365,6 @@ class BalatroEnv(gym.Env):
                 return -0.01
             return 0.0
 
-        # Invalid action for this phase
         return -0.01
 
     def _execute_shop_action(self, action: int) -> float:
@@ -295,7 +373,7 @@ class BalatroEnv(gym.Env):
 
         if BUY_OFFSET <= action < BUY_OFFSET + NUM_BUY_ACTIONS:
             slot_idx = action - BUY_OFFSET
-            success = self._game.shop_buy(slot_idx)
+            self._game.shop_buy(slot_idx)
             return 0.0
 
         elif SELL_OFFSET <= action < SELL_OFFSET + NUM_SELL_ACTIONS:
@@ -318,6 +396,11 @@ class BalatroEnv(gym.Env):
     # Observation encoding
     # -------------------------------------------------------------------
 
+    # Pre-build lookup dicts for fast encoding
+    _ENHANCEMENT_IDX: dict[Enhancement, int] = {e: i for i, e in enumerate(Enhancement)}
+    _EDITION_IDX: dict[Edition, int] = {e: i for i, e in enumerate(Edition)}
+    _SEAL_IDX: dict[Seal, int] = {s: i for i, s in enumerate(Seal)}
+
     def _encode_observation(self) -> np.ndarray:
         """Encode the current game state as a flat float32 vector."""
         assert self._game is not None
@@ -325,90 +408,133 @@ class BalatroEnv(gym.Env):
         obs = np.zeros(self._obs_dim, dtype=np.float32)
         offset = 0
 
-        # 1. Hand bitmap (52-dim): 1 if card is in hand
-        for card in self._game.hand:
-            card_idx = int(card.suit) * 13 + (int(card.rank) - 2)
-            obs[offset + card_idx] = 1.0
-        offset += 52
-
-        # 2. Face-down flags (52-dim): 1 if card is face-down
-        for card in self._game.hand:
-            if card.face_down:
+        # 1. Hand cards (MAX_HAND_SIZE * CARD_FEATURE_DIM)
+        # Each card slot: 52-dim one-hot (which card) + 8 enhancement + 3 edition
+        #                 + 4 seal + 1 face_down
+        for slot in range(MAX_HAND_SIZE):
+            if slot < len(self._game.hand):
+                card = self._game.hand[slot]
+                # Which card (52-dim one-hot)
                 card_idx = int(card.suit) * 13 + (int(card.rank) - 2)
                 obs[offset + card_idx] = 1.0
-        offset += 52
+                # Enhancement (8-dim one-hot)
+                if card.enhancement is not None:
+                    enh_idx = self._ENHANCEMENT_IDX[card.enhancement]
+                    obs[offset + 52 + enh_idx] = 1.0
+                # Edition (3-dim one-hot)
+                if card.edition is not None:
+                    ed_idx = self._EDITION_IDX[card.edition]
+                    obs[offset + 52 + NUM_ENHANCEMENTS + ed_idx] = 1.0
+                # Seal (4-dim one-hot)
+                if card.seal is not None:
+                    seal_idx = self._SEAL_IDX[card.seal]
+                    obs[offset + 52 + NUM_ENHANCEMENTS + NUM_EDITIONS + seal_idx] = 1.0
+                # Face-down
+                if card.face_down:
+                    obs[offset + 52 + NUM_ENHANCEMENTS + NUM_EDITIONS + NUM_SEALS] = 1.0
+            offset += CARD_FEATURE_DIM
 
-        # 3. Joker slots (max_jokers x joker_one_hot_size)
+        # 2. Joker slots (max_jokers * joker_one_hot_size)
         for slot in range(self.config.max_jokers):
             if slot < len(self._game.jokers):
                 joker = self._game.jokers[slot]
                 jid = joker.INFO.id
                 if jid in self._joker_id_to_idx:
-                    idx = self._joker_id_to_idx[jid]
-                    obs[offset + idx] = 1.0
-                # else: joker not in pool (shouldn't happen), leave as zeros
+                    obs[offset + self._joker_id_to_idx[jid]] = 1.0
             else:
-                # Empty slot: last position in one-hot
-                obs[offset + self._num_joker_types] = 1.0
+                obs[offset + self._num_joker_types] = 1.0  # empty marker
             offset += self._joker_one_hot_size
 
-        # 4. Money (normalized by 100)
+        # 3. Consumable slots (MAX_CONSUMABLE_SLOTS * consumable_one_hot_size)
+        for slot in range(MAX_CONSUMABLE_SLOTS):
+            if slot < len(self._game.consumables):
+                consumable = self._game.consumables[slot]
+                cid = consumable.INFO.id
+                if cid in self._consumable_id_to_idx:
+                    obs[offset + self._consumable_id_to_idx[cid]] = 1.0
+            else:
+                obs[offset + self._num_consumable_types] = 1.0  # empty marker
+            offset += self._consumable_one_hot_size
+
+        # 4. Hand levels (NUM_HAND_TYPES * 3): level/20, chips/500, mult/100
+        from balatro_gym.core.hand_evaluator import HandType
+        for ht in HandType:
+            data = self._game.hand_levels.get_level(ht)
+            obs[offset] = data.level / 20.0
+            obs[offset + 1] = data.chips / 500.0
+            obs[offset + 2] = data.mult / 100.0
+            offset += 3
+
+        # 5. Money (normalized by 100)
         obs[offset] = min(self._game.money / 100.0, 2.0)
         offset += 1
 
-        # 5. Ante (normalized by num_antes)
+        # 6. Ante (normalized by num_antes)
         obs[offset] = self._game.ante / self.config.num_antes
         offset += 1
 
-        # 6. Blind type one-hot (small=0, big=1, boss=2)
+        # 7. Blind type one-hot (small=0, big=1, boss=2)
         blind_idx = self._game.blind_index
         if 0 <= blind_idx < 3:
             obs[offset + blind_idx] = 1.0
         offset += 3
 
-        # 7. Score target (log-normalized)
+        # 8. Score target (log-normalized)
         target = self._game.score_target
         if target > 0:
-            obs[offset] = math.log1p(target) / 15.0  # log(50000) ~ 10.8
+            obs[offset] = math.log1p(target) / 15.0
         offset += 1
 
-        # 8. Score progress (current_score / score_target, capped at 2.0)
+        # 9. Score progress (current_score / score_target, capped at 2.0)
         if target > 0:
             obs[offset] = min(self._game.current_score / target, 2.0)
         offset += 1
 
-        # 9. Hands remaining (normalized)
+        # 10. Hands remaining (normalized)
         obs[offset] = self._game.hands_remaining / max(self.config.hands_per_round, 1)
         offset += 1
 
-        # 10. Discards remaining (normalized)
+        # 11. Discards remaining (normalized)
         obs[offset] = self._game.discards_remaining / max(self.config.discards_per_round, 1)
         offset += 1
 
-        # 11. Deck size (normalized by 52)
+        # 12. Deck size (normalized by 52)
         obs[offset] = self._game.deck.cards_remaining / 52.0
         offset += 1
 
-        # 12. Phase one-hot (play=0, shop=1)
+        # 13. Phase one-hot (play=0, shop=1)
         if self._game.phase == GamePhase.PLAY:
             obs[offset] = 1.0
         elif self._game.phase == GamePhase.SHOP:
             obs[offset + 1] = 1.0
         offset += 2
 
-        # 13. Shop offerings (shop_slots x (joker_one_hot_size + 2))
+        # 14. Shop joker offerings (shop_slots * (joker_one_hot_size + 2))
         for slot in range(self.config.shop_slots):
             if slot < len(self._game.shop.offerings):
                 offering = self._game.shop.offerings[slot]
-                jid = offering.joker.INFO.id
-                if jid in self._joker_id_to_idx:
-                    idx = self._joker_id_to_idx[jid]
-                    obs[offset + idx] = 1.0
-                # Cost (normalized by 20)
+                if offering.item_type == "joker" and offering.joker is not None:
+                    jid = offering.joker.INFO.id
+                    if jid in self._joker_id_to_idx:
+                        obs[offset + self._joker_id_to_idx[jid]] = 1.0
                 obs[offset + self._joker_one_hot_size] = offering.cost / 20.0
-                # Sold flag
                 obs[offset + self._joker_one_hot_size + 1] = float(offering.sold)
             offset += self._joker_one_hot_size + 2
+
+        # 15. Shop consumable offering (1 * (consumable_one_hot_size + 2))
+        # Find the first consumable offering (if any)
+        consumable_offering = None
+        for o in self._game.shop.offerings:
+            if o.item_type == "consumable":
+                consumable_offering = o
+                break
+        if consumable_offering is not None:
+            cid = consumable_offering.consumable.INFO.id if consumable_offering.consumable else None
+            if cid and cid in self._consumable_id_to_idx:
+                obs[offset + self._consumable_id_to_idx[cid]] = 1.0
+            obs[offset + self._consumable_one_hot_size] = consumable_offering.cost / 20.0
+            obs[offset + self._consumable_one_hot_size + 1] = float(consumable_offering.sold)
+        offset += self._consumable_one_hot_size + 2
 
         assert offset == self._obs_dim, f"Obs size mismatch: {offset} != {self._obs_dim}"
         return obs
@@ -418,10 +544,13 @@ class BalatroEnv(gym.Env):
     # -------------------------------------------------------------------
 
     def _build_info(self) -> dict[str, Any]:
-        """Build the info dict returned with each step."""
+        """Build the info dict returned with each step.
+
+        Always contains ``action_mask`` for use with masked RL algorithms.
+        """
         assert self._game is not None
 
-        info: dict[str, Any] = {
+        return {
             "action_mask": self.action_masks(),
             "phase": self._game.phase.value,
             "ante": self._game.ante,
@@ -433,8 +562,8 @@ class BalatroEnv(gym.Env):
             "discards_remaining": self._game.discards_remaining,
             "blinds_beaten": self._game.blinds_beaten,
             "num_jokers": len(self._game.jokers),
+            "num_consumables": len(self._game.consumables),
         }
-        return info
 
     # -------------------------------------------------------------------
     # Rendering
@@ -444,8 +573,11 @@ class BalatroEnv(gym.Env):
         if self._game is None:
             return None
 
-        if self.render_mode == "ansi" or self.render_mode == "human":
+        if self.render_mode == "ansi":
             return self._render_text()
+        elif self.render_mode == "human":
+            print(self._render_text())
+            return None
         return None
 
     def _render_text(self) -> str:
@@ -466,16 +598,15 @@ class BalatroEnv(gym.Env):
         else:
             lines.append("Jokers: (none)")
 
+        if g.consumables:
+            lines.append(f"Consumables: {', '.join(str(c) for c in g.consumables)}")
+
         if g.phase == GamePhase.SHOP:
             available = g.shop.get_available_offerings()
-            shop_str = ", ".join(
-                f"[{i}] {o.joker.INFO.name} (${o.cost})"
-                for i, o in available
-            )
-            lines.append(f"Shop: {shop_str or '(empty)'}")
+            parts = []
+            for i, o in available:
+                parts.append(f"[{i}] {o.name} (${o.cost}, {o.item_type})")
+            lines.append(f"Shop: {', '.join(parts) or '(empty)'}")
             lines.append(f"Reroll cost: ${g.shop.reroll_cost}")
 
-        text = "\n".join(lines)
-        if self.render_mode == "human":
-            print(text)
-        return text
+        return "\n".join(lines)

@@ -52,10 +52,19 @@ class HandResult:
 
 
 def _is_flush(cards: list[Card]) -> bool:
-    """Check if all cards share the same suit (need 5 cards)."""
+    """Check if all cards share the same suit (need 5 cards).
+
+    Wild Card enhancement makes a card count as any suit, so it can
+    fill in for any suit in a flush.
+    """
     if len(cards) < 5:
         return False
-    return len({c.suit for c in cards}) == 1
+    non_wild = [c for c in cards if not c.is_wild]
+    if not non_wild:
+        # All wild — it's a flush of any suit
+        return True
+    # All non-wild cards must share one suit
+    return len({c.suit for c in non_wild}) == 1
 
 
 def _is_straight(cards: list[Card]) -> tuple[bool, list[Card]]:

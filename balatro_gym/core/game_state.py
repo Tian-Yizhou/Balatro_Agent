@@ -13,9 +13,13 @@ from typing import Any
 
 import numpy as np
 
-from balatro_gym.core.card import Card, Deck, Rank
+from balatro_gym.core.card import Card, Deck, Rank, Enhancement, Seal
 from balatro_gym.core.hand_evaluator import HandResult, HandType, evaluate_hand
+from balatro_gym.core.hand_levels import HandLevelManager
 from balatro_gym.core.joker import BaseJoker, ScoreModification, create_joker
+from balatro_gym.core.consumable import (
+    BaseConsumable, ConsumableType, create_consumable, get_consumables_by_type,
+)
 from balatro_gym.core.blind import (
     BlindType, BlindDef, BlindManager, BossEffect,
     SMALL_BLIND, BIG_BLIND,
@@ -98,6 +102,8 @@ class GameStateSnapshot:
     max_jokers: int
     hands_played_this_round: int
     hand_type_played_counts: dict[str, int]
+    consumables: list[BaseConsumable] = field(default_factory=list)
+    consumable_slots: int = 2
 
 
 class GameState:
@@ -117,8 +123,10 @@ class GameState:
         starting_money: int = 4,
         available_joker_ids: list[str] | None = None,
         starting_joker_ids: list[str] | None = None,
+        available_consumable_ids: list[str] | None = None,
         shop_slots: int = 2,
         reroll_base_cost: int = 5,
+        consumable_slots: int = 2,
         seed: int | None = None,
     ):
         # Config
@@ -130,8 +138,10 @@ class GameState:
         self.starting_money = starting_money
         self.available_joker_ids = available_joker_ids or []
         self.starting_joker_ids = starting_joker_ids or []
+        self.available_consumable_ids = available_consumable_ids or []
         self.shop_slots = shop_slots
         self.reroll_base_cost = reroll_base_cost
+        self.consumable_slots = consumable_slots
 
         # RNG
         self.rng = np.random.default_rng(seed)
@@ -139,16 +149,19 @@ class GameState:
         # Game objects
         self.deck = Deck(self.rng)
         self.blind_manager = BlindManager(num_antes)
+        self.hand_levels = HandLevelManager()
         self.shop = Shop(
             joker_pool=self.available_joker_ids,
             rng=self.rng,
             num_slots=shop_slots,
             reroll_base_cost=reroll_base_cost,
+            consumable_pool=self.available_consumable_ids,
         )
 
         # Mutable state (set in reset)
         self.hand: list[Card] = []
         self.jokers: list[BaseJoker] = []
+        self.consumables: list[BaseConsumable] = []
         self.money: int = 0
         self.ante: int = 1
         self.blind_index: int = 0  # 0=small, 1=big, 2=boss
@@ -194,6 +207,8 @@ class GameState:
         self.deck.reset()
         self.hand = []
         self.jokers = [create_joker(jid) for jid in self.starting_joker_ids]
+        self.consumables = []
+        self.hand_levels.reset()
         self.money = self.starting_money
         self.ante = 1
         self.blind_index = 0
@@ -261,6 +276,15 @@ class GameState:
         if self.active_boss_effect is not None:
             self.active_boss_effect.remove(self)
             self.active_boss_effect = None
+
+        # Blue Seal: for each card in hand with Blue Seal, create planet card
+        for card in self.hand:
+            if card.seal == Seal.BLUE and not card.face_down:
+                if len(self.consumables) < self.consumable_slots:
+                    planet_pool = get_consumables_by_type(ConsumableType.PLANET)
+                    if planet_pool:
+                        chosen = str(self.rng.choice(planet_pool))
+                        self.consumables.append(create_consumable(chosen))
 
         # Notify jokers
         view = self.get_view()
@@ -421,6 +445,15 @@ class GameState:
             effects = joker.on_discard(discarded, view)
             self._process_side_effects(effects)
 
+        # Purple Seal: create a random Tarot if consumable slot available
+        for card in discarded:
+            if card.seal == Seal.PURPLE and not card.face_down:
+                if len(self.consumables) < self.consumable_slots:
+                    tarot_pool = get_consumables_by_type(ConsumableType.TAROT)
+                    if tarot_pool:
+                        chosen = str(self.rng.choice(tarot_pool))
+                        self.consumables.append(create_consumable(chosen))
+
         # Return discarded cards to deck and draw new ones
         self.deck.return_cards(discarded)
         self.hand = [c for i, c in enumerate(self.hand) if i not in card_indices]
@@ -441,15 +474,19 @@ class GameState:
     # -------------------------------------------------------------------
 
     def shop_buy(self, slot_index: int) -> bool:
-        """Buy a joker from the shop. Returns True if successful."""
+        """Buy a joker or consumable from the shop. Returns True if successful."""
         if self.phase != GamePhase.SHOP:
             raise ValueError(f"Cannot buy in phase {self.phase}")
 
-        joker, remaining = self.shop.buy_joker(
-            slot_index, self.money, self.jokers, self.max_jokers
+        item, remaining = self.shop.buy_item(
+            slot_index, self.money, self.jokers, self.max_jokers,
+            self.consumables, self.consumable_slots,
         )
-        if joker is not None:
-            self.jokers.append(joker)
+        if item is not None:
+            if isinstance(item, BaseJoker):
+                self.jokers.append(item)
+            elif isinstance(item, BaseConsumable):
+                self.consumables.append(item)
             self.money = remaining
             return True
         return False
@@ -493,26 +530,35 @@ class GameState:
         """Apply the full scoring pipeline matching Lua's evaluate_play.
 
         Scoring order (from state_events.lua):
-        1. Start with base chips and base mult from hand type
+        1. Hand-type base chips/mult from hand_levels (NOT from hand_evaluator)
         2. Blind modify_hand (The Flint halves them)
-        3. For each scoring card (left to right):
-           a. Card chip bonus (nominal + bonuses) -> add to chips
-           b. Card mult bonus -> add to mult  (enhanced cards, not in our simplified version)
-           c. Card x_mult -> multiply mult (enhanced cards, not in our simplified version)
-           d. For each joker: individual card effects (chips/mult/x_mult per card)
-        4. For each held card in hand:
-           a. Card held-mult -> add to mult
-           b. For each joker: held-individual effects
-        5. For each joker (left to right):
-           a. Edition effects (not in our simplified version)
-           b. Main joker effects: chip_mod -> mult_mod -> Xmult_mod
-           c. Joker-on-joker effects (not in our simplified version)
-           d. Edition x_mult (not in our simplified version)
-        6. Final score = max(0, chips * mult)
+        3. Joker on_before
+        4. Per scoring card (left to right):
+           a. Skip if debuffed
+           b. card.chip_value -> add to chips (includes nominal + enhancement bonus)
+           c. card.get_chip_mult(rng) -> add to mult (Mult +4, Lucky 1/5 +20)
+           d. card.get_chip_x_mult() -> multiply mult (Glass X2)
+           e. Card edition: Foil +50 chips, Holo +10 mult, Polychrome X1.5 mult
+           f. Gold Seal: +$3
+           g. Joker on_individual per card
+           h. If Red Seal: repeat steps b-g once (retrigger)
+        5. Per held card:
+           a. Skip if debuffed
+           b. card.get_held_x_mult() -> multiply mult (Steel X1.5)
+           c. Card edition effects (if held card has edition)
+           d. Joker on_held_individual per card
+           e. If Red Seal: repeat steps b-d once
+        6. Per joker (main, left to right):
+           a. Joker on_main (chip_mod, mult_mod, Xmult_mod)
+        7. Joker on_after
+        8. Glass Card shatter check (1/4 chance to destroy)
+        9. Gold Card held dollars ($3 per held Gold Card)
+        10. Score = max(0, chips * mult)
         """
-        # 1. Base chips and mult
-        chips = hand_result.base_chips
-        mult = hand_result.base_mult
+        # 1. Hand-type base chips/mult from hand levels
+        level_chips, level_mult = self.hand_levels.get_score(hand_result.hand_type)
+        chips = level_chips
+        mult = level_mult
         view = self.get_view()
 
         # 2. Blind modify_hand (e.g., The Flint)
@@ -521,57 +567,90 @@ class GameState:
             mult = new_mult
             chips = new_chips
 
-        # Joker "before" phase (stat updates like Runner, Ride the Bus)
+        # 3. Joker "before" phase (stat updates like Runner, Ride the Bus)
         for joker in self.jokers:
-            mod = joker.on_before(hand_result, scoring_hand, full_hand,
-                                  poker_hands, scoring_name, view)
-            # "before" effects don't directly modify score, they update joker state
+            joker.on_before(hand_result, scoring_hand, full_hand,
+                            poker_hands, scoring_name, view)
 
-        # 3. Score each scoring card individually
+        # 4. Score each scoring card individually
         for card in scoring_hand:
             if card.face_down:
-                # Debuffed cards don't score
                 continue
 
-            # a. Card chip bonus (already included in base_chips via hand_evaluator)
-            # In Lua, card:get_chip_bonus() is added here. Our hand_evaluator already
-            # adds scoring card chip values to base_chips, so we don't double-count.
-            # Actually, let me reconsider: in Lua the base chips/mult come from the
-            # hand type table, and THEN each scoring card's chip_bonus is added
-            # individually. Our hand_evaluator adds them in base_chips. This is
-            # equivalent for the simple case (no enhanced cards).
+            retriggers = 1
+            if card.seal == Seal.RED:
+                retriggers = 2
 
-            # d. Joker individual effects per scoring card
-            for joker in self.jokers:
-                mod = joker.on_individual(card, hand_result, scoring_hand,
-                                          scoring_name, view)
-                if mod:
-                    if mod.chips:
-                        chips += mod.chips
-                    if mod.mult:
-                        mult += mod.mult
-                    if mod.x_mult > 0:
-                        mult = int(mult * mod.x_mult)
-                    if mod.dollars:
-                        # Probabilistic money (e.g., Business Card: 1 in 2 chance)
-                        if self.rng.random() < 0.5:
+            for _ in range(retriggers):
+                # b. Card chip bonus (nominal + enhancement)
+                chips += card.chip_value
+                # c. Card mult bonus (Mult Card +4, Lucky 1/5 +20)
+                chips_mult_add = card.get_chip_mult(self.rng)
+                if chips_mult_add:
+                    mult += chips_mult_add
+                # d. Card x_mult (Glass X2)
+                card_x = card.get_chip_x_mult()
+                if card_x > 0:
+                    mult = int(mult * card_x)
+                # e. Card edition bonus
+                ed_chips, ed_mult, ed_x = card.get_edition_bonus()
+                if ed_chips:
+                    chips += ed_chips
+                if ed_mult:
+                    mult += ed_mult
+                if ed_x > 0:
+                    mult = int(mult * ed_x)
+                # f. Gold Seal: +$3
+                played_dollars = card.get_played_dollars()
+                if played_dollars:
+                    self.money += played_dollars
+                # g. Joker individual effects per scoring card
+                for joker in self.jokers:
+                    mod = joker.on_individual(card, hand_result, scoring_hand,
+                                              scoring_name, view)
+                    if mod:
+                        if mod.chips:
+                            chips += mod.chips
+                        if mod.mult:
+                            mult += mod.mult
+                        if mod.x_mult > 0:
+                            mult = int(mult * mod.x_mult)
+                        if mod.dollars:
                             self.money += mod.dollars
 
-        # 4. Held card effects
+        # 5. Held card effects
         for card in held_cards:
             if card.face_down:
                 continue
 
-            for joker in self.jokers:
-                mod = joker.on_held_individual(card, hand_result, scoring_hand,
-                                               scoring_name, view)
-                if mod:
-                    if mod.mult:
-                        mult += mod.mult
-                    if mod.x_mult > 0:
-                        mult = int(mult * mod.x_mult)
+            retriggers = 1
+            if card.seal == Seal.RED:
+                retriggers = 2
 
-        # 5. Main joker effects (left to right)
+            for _ in range(retriggers):
+                # b. Steel Card X1.5
+                held_x = card.get_held_x_mult()
+                if held_x > 0:
+                    mult = int(mult * held_x)
+                # c. Held card edition
+                ed_chips, ed_mult, ed_x = card.get_edition_bonus()
+                if ed_chips:
+                    chips += ed_chips
+                if ed_mult:
+                    mult += ed_mult
+                if ed_x > 0:
+                    mult = int(mult * ed_x)
+                # d. Joker held-individual effects
+                for joker in self.jokers:
+                    mod = joker.on_held_individual(card, hand_result, scoring_hand,
+                                                   scoring_name, view)
+                    if mod:
+                        if mod.mult:
+                            mult += mod.mult
+                        if mod.x_mult > 0:
+                            mult = int(mult * mod.x_mult)
+
+        # 6. Main joker effects (left to right)
         for joker in self.jokers:
             mod = joker.on_main(hand_result, scoring_hand, full_hand,
                                 poker_hands, scoring_name, view)
@@ -583,24 +662,89 @@ class GameState:
                 if mod.Xmult_mod > 0:
                     mult = int(mult * mod.Xmult_mod)
 
-        # Joker "after" phase (Ice Cream loses chips, etc.)
+        # 7. Joker "after" phase (Ice Cream loses chips, etc.)
         for joker in self.jokers:
             joker.on_after(hand_result, scoring_hand, scoring_name, view)
 
-        # 6. Final score
+        # 8. Glass Card shatter (1/4 chance for each Glass scoring card)
+        for card in scoring_hand:
+            if card.enhancement == Enhancement.GLASS and not card.face_down:
+                if self.rng.random() < 0.25:
+                    self.deck.remove_card(card)
+
+        # 9. Gold Card held dollars ($3 per held Gold Card at end of round —
+        #    actually this happens in economy, not scoring. But we track it here
+        #    since held_cards is available.)
+        for card in held_cards:
+            if not card.face_down:
+                held_dollars = card.get_held_dollars()
+                if held_dollars:
+                    self.money += held_dollars
+
+        # 10. Final score
         return max(0, chips * mult)
 
     # -------------------------------------------------------------------
     # Side effects processing
     # -------------------------------------------------------------------
 
+    # -------------------------------------------------------------------
+    # Consumable actions
+    # -------------------------------------------------------------------
+
+    def use_consumable(self, slot_index: int,
+                       highlighted_indices: list[int] | None = None) -> dict[str, Any]:
+        """Use a consumable from the player's consumable slots.
+
+        Args:
+            slot_index: Index into self.consumables.
+            highlighted_indices: Indices into self.hand of targeted cards.
+
+        Returns:
+            Side effects dict from the consumable.
+        """
+        if slot_index < 0 or slot_index >= len(self.consumables):
+            raise ValueError(f"Invalid consumable slot: {slot_index}")
+
+        highlighted = highlighted_indices or []
+        consumable = self.consumables[slot_index]
+
+        if not consumable.can_use(self, highlighted):
+            raise ValueError(f"Cannot use {consumable.INFO.name} with {len(highlighted)} highlighted cards")
+
+        # Remove consumable before use (it's consumed)
+        self.consumables.pop(slot_index)
+
+        # Apply effect
+        result = consumable.use(self, highlighted)
+
+        # Process side effects
+        self._process_side_effects(result)
+
+        return result
+
+    # -------------------------------------------------------------------
+    # Side effects processing
+    # -------------------------------------------------------------------
+
     def _process_side_effects(self, effects: dict[str, Any]) -> None:
-        """Process side effects returned by joker hooks."""
+        """Process side effects returned by joker/consumable hooks."""
         if not effects:
             return
 
         if "money" in effects:
-            self.money += effects["money"]
+            # Money already applied by the consumable in most cases;
+            # only apply here for joker hooks that return money
+            pass
+
+        if "create_consumable" in effects:
+            for cid in effects["create_consumable"]:
+                if len(self.consumables) < self.consumable_slots:
+                    self.consumables.append(create_consumable(cid))
+
+        if "create_joker" in effects:
+            if len(self.jokers) < self.max_jokers:
+                self.jokers.append(create_joker(effects["create_joker"]))
 
     # -------------------------------------------------------------------
     # Observation
@@ -622,6 +766,8 @@ class GameState:
             max_jokers=self.max_jokers,
             hands_played_this_round=self.hands_played_this_round,
             hand_type_played_counts=dict(self.hand_type_played_counts),
+            consumables=list(self.consumables),
+            consumable_slots=self.consumable_slots,
         )
 
     def get_valid_actions(self) -> dict[str, Any]:
@@ -632,15 +778,24 @@ class GameState:
                 "can_discard": self.discards_remaining > 0,
                 "hand_size": len(self.hand),
                 "max_play": min(5, len(self.hand)),
+                "consumables": [
+                    (i, c.INFO.name, c.INFO.min_highlighted, c.INFO.max_highlighted)
+                    for i, c in enumerate(self.consumables)
+                ],
             }
         elif self.phase == GamePhase.SHOP:
             available = self.shop.get_available_offerings()
+            can_buy = []
+            for i, o in available:
+                if o.item_type == "joker":
+                    affordable = (o.cost <= self.money
+                                  and len(self.jokers) < self.max_jokers)
+                else:
+                    affordable = (o.cost <= self.money
+                                  and len(self.consumables) < self.consumable_slots)
+                can_buy.append((i, o.name, o.cost, affordable, o.item_type))
             return {
-                "can_buy": [
-                    (i, o.joker.INFO.name, o.cost, o.cost <= self.money
-                     and len(self.jokers) < self.max_jokers)
-                    for i, o in available
-                ],
+                "can_buy": can_buy,
                 "can_sell": [(i, j.INFO.name, self.shop.sell_value(j))
                              for i, j in enumerate(self.jokers)],
                 "can_reroll": self.money >= self.shop.reroll_cost,

@@ -211,7 +211,7 @@ class GreedyJoker(BaseJoker):
                      rarity=1, cost=5)
 
     def on_individual(self, card, hand_result, scoring_hand, scoring_name, view):
-        if card.suit == Suit.DIAMONDS and not card.face_down:
+        if (card.suit == Suit.DIAMONDS or card.is_wild) and not card.face_down:
             return ScoreModification(mult=3)
         return None
 
@@ -224,7 +224,7 @@ class LustyJoker(BaseJoker):
                      rarity=1, cost=5)
 
     def on_individual(self, card, hand_result, scoring_hand, scoring_name, view):
-        if card.suit == Suit.HEARTS and not card.face_down:
+        if (card.suit == Suit.HEARTS or card.is_wild) and not card.face_down:
             return ScoreModification(mult=3)
         return None
 
@@ -237,7 +237,7 @@ class WrathfulJoker(BaseJoker):
                      rarity=1, cost=5)
 
     def on_individual(self, card, hand_result, scoring_hand, scoring_name, view):
-        if card.suit == Suit.SPADES and not card.face_down:
+        if (card.suit == Suit.SPADES or card.is_wild) and not card.face_down:
             return ScoreModification(mult=3)
         return None
 
@@ -250,7 +250,7 @@ class GluttonousJoker(BaseJoker):
                      rarity=1, cost=5)
 
     def on_individual(self, card, hand_result, scoring_hand, scoring_name, view):
-        if card.suit == Suit.CLUBS and not card.face_down:
+        if (card.suit == Suit.CLUBS or card.is_wild) and not card.face_down:
             return ScoreModification(mult=3)
         return None
 
