@@ -210,3 +210,4 @@ __marimo__/
 
 # local directories
 Balatro/resources/
+.DS_Store
