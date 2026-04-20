@@ -136,6 +136,17 @@ def reset_uid_counter() -> None:
     _next_uid = 0
 
 
+def _get_next_uid() -> int:
+    """Return current UID counter value (for serialization)."""
+    return _next_uid
+
+
+def _set_next_uid(value: int) -> None:
+    """Set the UID counter (for deserialization)."""
+    global _next_uid
+    _next_uid = value
+
+
 # ---------------------------------------------------------------------------
 # Card dataclass
 # ---------------------------------------------------------------------------
@@ -315,6 +326,38 @@ class Card:
         if self.seal:
             parts.append(f"<{self.seal.name}>")
         return "".join(parts)
+
+    # ------------------------------------------------------------------
+    # Serialization
+    # ------------------------------------------------------------------
+
+    def to_dict(self) -> dict:
+        """Serialize this card to a JSON-compatible dict."""
+        return {
+            "rank": int(self.rank),
+            "suit": int(self.suit),
+            "uid": self.uid,
+            "enhancement": self.enhancement.value if self.enhancement else None,
+            "edition": self.edition.value if self.edition else None,
+            "seal": self.seal.value if self.seal else None,
+            "face_down": self.face_down,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> Card:
+        """Deserialize a card from a dict (as produced by ``to_dict``)."""
+        enh = Enhancement(d["enhancement"]) if d.get("enhancement") else None
+        ed = Edition(d["edition"]) if d.get("edition") else None
+        sl = Seal(d["seal"]) if d.get("seal") else None
+        card = cls.__new__(cls)
+        card.rank = Rank(d["rank"])
+        card.suit = Suit(d["suit"])
+        card.uid = d["uid"]
+        card.enhancement = enh
+        card.edition = ed
+        card.seal = sl
+        card.face_down = d.get("face_down", False)
+        return card
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, Card):

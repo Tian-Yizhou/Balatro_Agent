@@ -13,7 +13,7 @@ from typing import Any
 
 import numpy as np
 
-from balatro_gym.core.card import Card, Deck, Rank, Enhancement, Seal
+from balatro_gym.core.card import Card, Deck, Rank, Enhancement, Seal, _get_next_uid
 from balatro_gym.core.hand_evaluator import HandResult, HandType, evaluate_hand
 from balatro_gym.core.hand_levels import HandLevelManager
 from balatro_gym.core.joker import BaseJoker, ScoreModification, create_joker
@@ -22,9 +22,9 @@ from balatro_gym.core.consumable import (
 )
 from balatro_gym.core.blind import (
     BlindType, BlindDef, BlindManager, BossEffect,
-    SMALL_BLIND, BIG_BLIND,
+    SMALL_BLIND, BIG_BLIND, BOSS_BLINDS,
 )
-from balatro_gym.core.shop import Shop
+from balatro_gym.core.shop import Shop, ShopOffering
 
 
 class GamePhase(enum.Enum):
@@ -84,6 +84,18 @@ def _get_poker_hands(hand_type: HandType) -> dict[str, bool]:
         result["Full House"] = True
 
     return result
+
+
+def _find_blind_def(name: str) -> BlindDef:
+    """Look up a BlindDef by name."""
+    if name == SMALL_BLIND.name:
+        return SMALL_BLIND
+    if name == BIG_BLIND.name:
+        return BIG_BLIND
+    for bd in BOSS_BLINDS:
+        if bd.name == name:
+            return bd
+    return SMALL_BLIND  # fallback
 
 
 @dataclass
@@ -769,6 +781,189 @@ class GameState:
             consumables=list(self.consumables),
             consumable_slots=self.consumable_slots,
         )
+
+    # -------------------------------------------------------------------
+    # State serialization (for save/resume)
+    # -------------------------------------------------------------------
+
+    def serialize(self) -> dict[str, Any]:
+        """Serialize the full game state to a JSON-compatible dict.
+
+        The returned dict can be passed to ``deserialize()`` to restore
+        the game to this exact point, including RNG state.
+        """
+        return {
+            # Config (needed to reconstruct the GameState shell)
+            "config": {
+                "num_antes": self.num_antes,
+                "hands_per_round": self.hands_per_round,
+                "discards_per_round": self.discards_per_round,
+                "hand_size": self.hand_size,
+                "max_jokers": self.max_jokers,
+                "starting_money": self.starting_money,
+                "available_joker_ids": list(self.available_joker_ids),
+                "starting_joker_ids": list(self.starting_joker_ids),
+                "available_consumable_ids": list(self.available_consumable_ids),
+                "shop_slots": self.shop_slots,
+                "reroll_base_cost": self.reroll_base_cost,
+                "consumable_slots": self.consumable_slots,
+            },
+            # RNG state (numpy PCG64 state is JSON-serializable as-is)
+            "rng_state": self.rng.bit_generator.state,
+            # Deck
+            "deck_draw": [c.to_dict() for c in self.deck.draw_pile],
+            "deck_discard": [c.to_dict() for c in self.deck.discard_pile],
+            # Hand
+            "hand": [c.to_dict() for c in self.hand],
+            # Jokers (id + mutable state)
+            "jokers": [
+                {"id": j.INFO.id, "state": j.get_state()}
+                for j in self.jokers
+            ],
+            # Consumables
+            "consumables": [c.INFO.id for c in self.consumables],
+            # Hand levels (only store levels that differ from 1)
+            "hand_levels": {
+                str(int(ht)): data.level
+                for ht, data in self.hand_levels.get_all_levels().items()
+                if data.level != 1
+            },
+            # Scalars
+            "money": self.money,
+            "ante": self.ante,
+            "blind_index": self.blind_index,
+            "current_score": self.current_score,
+            "hands_remaining": self.hands_remaining,
+            "discards_remaining": self.discards_remaining,
+            "phase": self.phase.value,
+            "hands_played_this_round": self.hands_played_this_round,
+            "hand_type_played_counts": dict(self.hand_type_played_counts),
+            "total_hands_played": self.total_hands_played,
+            "blinds_beaten": self.blinds_beaten,
+            # Blind def (store by name for boss identification)
+            "current_blind_name": self.current_blind_def.name,
+            # Shop state
+            "shop": {
+                "reroll_cost": self.shop.reroll_cost,
+                "offerings": [
+                    {
+                        "item_type": o.item_type,
+                        "item_id": (
+                            o.joker.INFO.id if o.item_type == "joker" and o.joker
+                            else o.consumable.INFO.id if o.item_type == "consumable" and o.consumable
+                            else None
+                        ),
+                        "cost": o.cost,
+                        "sold": o.sold,
+                    }
+                    for o in self.shop.offerings
+                ],
+            },
+            # UID counter (so new cards get unique IDs after restore)
+            "next_uid": _get_next_uid(),
+        }
+
+    @classmethod
+    def deserialize(cls, data: dict[str, Any]) -> "GameState":
+        """Restore a GameState from a serialized dict.
+
+        Args:
+            data: Dict as returned by ``serialize()``.
+
+        Returns:
+            A GameState restored to the exact saved point.
+        """
+        from balatro_gym.core.card import Card, _set_next_uid
+
+        cfg = data["config"]
+        gs = cls(
+            num_antes=cfg["num_antes"],
+            hands_per_round=cfg["hands_per_round"],
+            discards_per_round=cfg["discards_per_round"],
+            hand_size=cfg["hand_size"],
+            max_jokers=cfg["max_jokers"],
+            starting_money=cfg["starting_money"],
+            available_joker_ids=cfg["available_joker_ids"],
+            starting_joker_ids=cfg["starting_joker_ids"],
+            available_consumable_ids=cfg["available_consumable_ids"],
+            shop_slots=cfg["shop_slots"],
+            reroll_base_cost=cfg["reroll_base_cost"],
+            consumable_slots=cfg["consumable_slots"],
+            seed=0,  # dummy — we'll overwrite the RNG state
+        )
+
+        # Restore RNG state
+        gs.rng.bit_generator.state = data["rng_state"]
+        # The deck and shop share this rng by reference (set in __init__)
+
+        # Restore UID counter
+        _set_next_uid(data["next_uid"])
+
+        # Restore deck
+        gs.deck.draw_pile = [Card.from_dict(d) for d in data["deck_draw"]]
+        gs.deck.discard_pile = [Card.from_dict(d) for d in data["deck_discard"]]
+
+        # Restore hand
+        gs.hand = [Card.from_dict(d) for d in data["hand"]]
+
+        # Restore jokers
+        gs.jokers = []
+        for jdata in data["jokers"]:
+            joker = create_joker(jdata["id"])
+            joker.set_state(jdata["state"])
+            gs.jokers.append(joker)
+
+        # Restore consumables
+        gs.consumables = [create_consumable(cid) for cid in data["consumables"]]
+
+        # Restore hand levels
+        gs.hand_levels.reset()
+        for ht_str, level in data["hand_levels"].items():
+            ht = HandType(int(ht_str))
+            gs.hand_levels.level_up(ht, level - 1)
+
+        # Restore scalars
+        gs.money = data["money"]
+        gs.ante = data["ante"]
+        gs.blind_index = data["blind_index"]
+        gs.current_score = data["current_score"]
+        gs.hands_remaining = data["hands_remaining"]
+        gs.discards_remaining = data["discards_remaining"]
+        gs.phase = GamePhase(data["phase"])
+        gs.hands_played_this_round = data["hands_played_this_round"]
+        gs.hand_type_played_counts = dict(data["hand_type_played_counts"])
+        gs.total_hands_played = data["total_hands_played"]
+        gs.blinds_beaten = data["blinds_beaten"]
+
+        # Restore blind def
+        blind_name = data["current_blind_name"]
+        gs.current_blind_def = _find_blind_def(blind_name)
+
+        # Restore boss effect (re-derive from blind def if boss)
+        gs.active_boss_effect = None
+        if gs.current_blind_def.is_boss and gs.phase == GamePhase.PLAY:
+            gs.active_boss_effect = gs.blind_manager.get_boss_effect(gs.current_blind_def)
+            # Don't re-apply — cards are already debuffed in the serialized state
+
+        # Restore shop state
+        shop_data = data["shop"]
+        gs.shop.reroll_cost = shop_data["reroll_cost"]
+        gs.shop.offerings = []
+        for odata in shop_data["offerings"]:
+            if odata["item_type"] == "joker" and odata["item_id"]:
+                joker = create_joker(odata["item_id"])
+                gs.shop.offerings.append(ShopOffering(
+                    joker=joker, cost=odata["cost"],
+                    sold=odata["sold"], item_type="joker",
+                ))
+            elif odata["item_type"] == "consumable" and odata["item_id"]:
+                consumable = create_consumable(odata["item_id"])
+                gs.shop.offerings.append(ShopOffering(
+                    consumable=consumable, cost=odata["cost"],
+                    sold=odata["sold"], item_type="consumable",
+                ))
+
+        return gs
 
     def get_valid_actions(self) -> dict[str, Any]:
         """Return valid actions for the current phase."""
