@@ -12,7 +12,7 @@ A Gymnasium-compatible environment for the Balatro card game, designed for reinf
 - [Reward Structure](#reward-structure)
 - [Difficulty Presets](#difficulty-presets)
 - [Custom Configuration](#custom-configuration)
-- [Training with PPO (sb3-contrib)](#training-with-ppo-sb3-contrib)
+- [Training with PPO (Ray RLlib)](#training-with-ppo-ray-rllib)
 - [Recording and Logging](#recording-and-logging)
 - [Episode Seed IDs and State Resume](#episode-seed-ids-and-state-resume)
 - [Game Mechanics Reference](#game-mechanics-reference)
@@ -31,8 +31,16 @@ pip install -e .
 # Dependencies
 pip install gymnasium numpy
 
-# For RL training
-pip install stable-baselines3 sb3-contrib torch
+# For RL training with Ray RLlib
+pip install -e ".[rllib]"
+# or manually:
+pip install "ray[rllib]" torch
+
+# For recording wrappers (trajectory + stats)
+pip install -e ".[recording]"
+
+# Everything at once
+pip install -e ".[all]"
 ```
 
 After installation, the following Gymnasium environment IDs are available:
@@ -247,7 +255,7 @@ obs, reward, terminated, truncated, info = env.step(action)
 mask = info["action_mask"]
 
 # The unwrapped env also exposes action_masks() directly
-# (required by sb3-contrib MaskablePPO)
+# (used by BalatroRLlibEnv wrapper for RLlib action masking)
 mask = env.unwrapped.action_masks()
 ```
 
@@ -401,92 +409,189 @@ starting_joker_ids:
 
 ---
 
-## Training with PPO (sb3-contrib)
+## Training with PPO (Ray RLlib)
 
-The environment is designed for `MaskablePPO` from `sb3-contrib`, which handles the discrete action space with action masking.
+The environment uses [Ray RLlib](https://docs.ray.io/en/latest/rllib/) for distributed PPO training with action masking. The `balatro_gym.rllib` package provides:
 
-### Basic Training
+- **`BalatroRLlibEnv`** — wraps the base env with a Dict observation space (`{"observations": ..., "action_mask": ...}`)
+- **`ActionMaskingTorchRLModule`** — PPO RLModule that masks invalid actions to `-inf` logits
+- **`train.py`** — CLI script with full control over distributed resource allocation
+- **`evaluate.py`** — CLI script for checkpoint evaluation
 
-```python
-import balatro_gym
-import gymnasium as gym
-from sb3_contrib import MaskablePPO
+### Basic Training (CLI)
 
-env = gym.make("Balatro-Easy-v0")
+```bash
+# Minimal: 2 CPU rollout workers, CPU training, easy difficulty
+python -m balatro_gym.rllib.train --difficulty easy --num-env-runners 2
 
-model = MaskablePPO(
-    "MlpPolicy",
-    env,
-    verbose=1,
-    learning_rate=3e-4,
-    n_steps=2048,
-    batch_size=64,
-    n_epochs=10,
-    gamma=0.99,
-    tensorboard_log="./logs/",
-)
+# GPU training with 8 CPU rollout workers
+python -m balatro_gym.rllib.train \
+    --difficulty easy \
+    --num-env-runners 8 \
+    --num-gpus-per-learner 1
 
-model.learn(total_timesteps=1_000_000)
-model.save("balatro_ppo_easy")
+# Multi-GPU: 2 learner workers each with 1 GPU, 16 CPU rollout workers
+python -m balatro_gym.rllib.train \
+    --difficulty medium \
+    --num-env-runners 16 \
+    --num-learners 2 \
+    --num-gpus-per-learner 1
+
+# Vectorized envs on each runner (faster sampling)
+python -m balatro_gym.rllib.train \
+    --difficulty easy \
+    --num-env-runners 8 \
+    --num-envs-per-env-runner 4
+
+# Custom hyperparameters and architecture
+python -m balatro_gym.rllib.train \
+    --difficulty easy \
+    --lr 1e-4 \
+    --gamma 0.995 \
+    --entropy-coeff 0.005 \
+    --fcnet-hiddens 512 256 \
+    --train-batch-size 8000 \
+    --num-iterations 500 \
+    --checkpoint-freq 50
 ```
 
-### Evaluation
+### Resource Allocation
+
+The key idea: **rollout collection** runs on CPU workers and **training** runs on a separate learner (optionally on GPU). You control each independently:
+
+| Flag | Controls | Typical value |
+|------|----------|---------------|
+| `--num-env-runners N` | CPU rollout workers (sampling) | 2–16 |
+| `--num-envs-per-env-runner N` | Vectorized envs per worker | 1–4 |
+| `--num-learners N` | Remote learner workers | 0 (local) or 1–2 |
+| `--num-gpus-per-learner N` | GPUs per learner | 0 (CPU) or 1 |
+| `--num-cpus-per-env-runner N` | CPUs per rollout worker | 1 |
+| `--num-gpus-per-env-runner N` | GPUs per rollout worker | 0 |
+
+Example resource layouts:
+
+```
+# Laptop (4 CPU cores):
+--num-env-runners 2
+
+# Workstation (16 cores + 1 GPU):
+--num-env-runners 12 --num-gpus-per-learner 1
+
+# Multi-GPU server (64 cores + 4 GPUs):
+--num-env-runners 48 --num-learners 4 --num-gpus-per-learner 1
+
+# Remote Ray cluster:
+--ray-address auto --num-env-runners 32 --num-gpus-per-learner 1
+```
+
+### Programmatic Training
 
 ```python
-from sb3_contrib.common.maskable.utils import get_action_masks
+import ray
+from ray.tune.registry import register_env
+from ray.rllib.algorithms.ppo import PPOConfig
+from ray.rllib.core.rl_module.rl_module import RLModuleSpec
 
-model = MaskablePPO.load("balatro_ppo_easy")
-env = gym.make("Balatro-Easy-v0")
+from balatro_gym.rllib import (
+    make_balatro_env,
+    ActionMaskingTorchRLModule,
+)
 
-wins = 0
-num_episodes = 100
+ray.init()
+register_env("Balatro", make_balatro_env)
 
-for _ in range(num_episodes):
-    obs, info = env.reset()
-    terminated = False
-    while not terminated:
-        action_masks = get_action_masks(env)
-        action, _ = model.predict(obs, action_masks=action_masks, deterministic=True)
-        obs, reward, terminated, truncated, info = env.step(int(action))
+config = (
+    PPOConfig()
+    .environment(
+        env="Balatro",
+        env_config={"difficulty": "easy"},
+    )
+    .env_runners(
+        num_env_runners=4,
+        num_envs_per_env_runner=2,
+    )
+    .learners(
+        num_gpus_per_learner=0,  # set to 1 for GPU training
+    )
+    .training(
+        lr=3e-4,
+        gamma=0.99,
+        lambda_=0.95,
+        clip_param=0.2,
+        entropy_coeff=0.01,
+        train_batch_size_per_learner=4000,
+        minibatch_size=256,
+        num_epochs=10,
+    )
+    .rl_module(
+        rl_module_spec=RLModuleSpec(
+            module_class=ActionMaskingTorchRLModule,
+            model_config={
+                "head_fcnet_hiddens": [256, 256],
+                "head_fcnet_activation": "relu",
+            },
+        ),
+    )
+)
 
-    if info["phase"] == "game_won":
-        wins += 1
+algo = config.build()
 
-print(f"Win rate: {wins}/{num_episodes} = {wins/num_episodes:.1%}")
+for i in range(200):
+    result = algo.train()
+    mean_reward = result["env_runners"]["episode_reward_mean"]
+    print(f"Iter {i}: reward_mean={mean_reward:.2f}")
+
+    if i % 50 == 0:
+        algo.save("checkpoints/balatro_ppo")
+
+algo.stop()
+ray.shutdown()
+```
+
+### Evaluation (CLI)
+
+```bash
+# Evaluate a checkpoint over 100 episodes
+python -m balatro_gym.rllib.evaluate \
+    --checkpoint checkpoints/balatro_ppo/checkpoint_000200 \
+    --num-episodes 100 \
+    --difficulty easy \
+    --verbose
 ```
 
 ### Curriculum Training
 
-Train on easy first, then fine-tune on harder difficulties:
+Train on easy first, then restore the checkpoint for harder difficulties:
 
-```python
-# Phase 1: Easy
-env_easy = gym.make("Balatro-Easy-v0")
-model = MaskablePPO("MlpPolicy", env_easy, verbose=1)
-model.learn(total_timesteps=500_000)
+```bash
+# Phase 1: Easy (200 iterations)
+python -m balatro_gym.rllib.train \
+    --difficulty easy \
+    --num-iterations 200 \
+    --checkpoint-dir checkpoints/phase1
 
-# Phase 2: Medium
-env_medium = gym.make("Balatro-Medium-v0")
-model.set_env(env_medium)
-model.learn(total_timesteps=500_000)
-
-# Phase 3: Hard
-env_hard = gym.make("Balatro-Hard-v0")
-model.set_env(env_hard)
-model.learn(total_timesteps=500_000)
+# Phase 2: Medium — restore from Phase 1 checkpoint
+# (programmatic — load checkpoint, rebuild with new env_config)
 ```
 
-> **Note:** When switching environments with `set_env()`, the observation dimension changes across difficulty levels (756 for Easy, 868 for Medium, 950 for Hard) because the joker/consumable pool sizes differ. You may need to create a new model for each difficulty or use a fixed-size config across all stages.
-
-### Vectorized Training
-
 ```python
-from stable_baselines3.common.env_util import make_vec_env
+# Curriculum in code
+config_easy = build_ppo_config(difficulty="easy")
+algo = config_easy.build()
+for i in range(200):
+    algo.train()
+checkpoint = algo.save("checkpoints/curriculum")
+algo.stop()
 
-env = make_vec_env("Balatro-Easy-v0", n_envs=8)
-model = MaskablePPO("MlpPolicy", env, verbose=1)
-model.learn(total_timesteps=2_000_000)
+config_medium = build_ppo_config(difficulty="medium")
+algo = config_medium.build()
+algo.restore(checkpoint)
+for i in range(200):
+    algo.train()
+algo.stop()
 ```
+
+> **Note:** The observation dimension changes across difficulty levels (756 for Easy, 868 for Medium, 950 for Hard) because the joker/consumable pool sizes differ. For curriculum training across difficulties, consider using a fixed pool size config across all stages.
 
 ---
 
@@ -978,7 +1083,7 @@ c_trance, c_medium, c_aura, c_cryptid, c_immolate
 
 1. **Start with Easy.** The easy preset has only 4 antes, more hands/discards, and a free starter joker. This makes it feasible for agents to win during early training.
 
-2. **Use action masking.** The action space is large (446) but most actions are invalid at any given state. MaskablePPO from sb3-contrib handles this natively.
+2. **Use action masking.** The action space is large (446) but most actions are invalid at any given state. The `ActionMaskingTorchRLModule` in `balatro_gym.rllib` handles this natively with RLlib PPO.
 
 3. **Observation varies by config.** The observation dimension changes with the joker/consumable pool size. If you plan curriculum training across difficulties, consider using a fixed pool size for all stages.
 
