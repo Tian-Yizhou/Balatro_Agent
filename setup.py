@@ -10,6 +10,9 @@ setup(
         "gymnasium>=0.29.0",
         "numpy>=1.24.0",
     ],
+    extras_require={
+        "recording": ["pyarrow>=12.0"],
+    },
     entry_points={
         "gymnasium.envs": ["balatro_gym = balatro_gym"],
     },

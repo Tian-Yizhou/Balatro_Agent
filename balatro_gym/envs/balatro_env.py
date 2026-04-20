@@ -11,6 +11,7 @@ tooling (env_checker, VecEnv wrappers, etc.).
 
 from __future__ import annotations
 
+import json
 import math
 from itertools import combinations
 from typing import Any
@@ -23,6 +24,7 @@ from balatro_gym.core.card import Enhancement, Edition, Seal
 from balatro_gym.core.game_state import GamePhase, GameState
 from balatro_gym.core.joker import get_all_joker_ids
 from balatro_gym.core.consumable import get_all_consumable_ids, ConsumableType
+from balatro_gym.core.seed_id import generate_seed_id, parse_seed_id
 from balatro_gym.envs.configs import GameConfig
 
 
@@ -147,6 +149,10 @@ class BalatroEnv(gym.Env):
         self._prev_score_target = 0
         self._prev_blinds_beaten = 0
 
+        # Episode seed ID (set on reset)
+        self._game_seed: int = 0
+        self.episode_seed_id: str = ""
+
     def _compute_obs_dim(self) -> int:
         """Calculate total observation vector length.
 
@@ -223,6 +229,10 @@ class BalatroEnv(gym.Env):
             seed=game_seed,
         )
         self._game.reset()
+
+        # Generate episode seed ID
+        self._game_seed = game_seed
+        self.episode_seed_id = generate_seed_id(game_seed)
 
         self._prev_score = 0
         self._prev_score_target = self._game.score_target
@@ -552,6 +562,7 @@ class BalatroEnv(gym.Env):
 
         return {
             "action_mask": self.action_masks(),
+            "episode_seed_id": self.episode_seed_id,
             "phase": self._game.phase.value,
             "ante": self._game.ante,
             "blind_index": self._game.blind_index,
@@ -564,6 +575,83 @@ class BalatroEnv(gym.Env):
             "num_jokers": len(self._game.jokers),
             "num_consumables": len(self._game.consumables),
         }
+
+    # -------------------------------------------------------------------
+    # State save / load
+    # -------------------------------------------------------------------
+
+    def save_state(self) -> dict[str, Any]:
+        """Serialize the full environment state to a JSON-compatible dict.
+
+        Returns a checkpoint that can be passed to ``load_state()`` to
+        restore the environment to this exact point and continue playing.
+
+        The dict includes the game state, reward-shaping trackers, and
+        the episode seed ID.
+        """
+        assert self._game is not None, "Must call reset() before save_state()"
+        return {
+            "game_state": self._game.serialize(),
+            "episode_seed_id": self.episode_seed_id,
+            "game_seed": self._game_seed,
+            "prev_score": self._prev_score,
+            "prev_score_target": self._prev_score_target,
+            "prev_blinds_beaten": self._prev_blinds_beaten,
+        }
+
+    def load_state(self, checkpoint: dict[str, Any]) -> tuple[np.ndarray, dict[str, Any]]:
+        """Restore the environment from a checkpoint dict.
+
+        Args:
+            checkpoint: Dict as returned by ``save_state()``.
+
+        Returns:
+            (observation, info) as if ``reset()`` had just returned at
+            the checkpoint moment.
+        """
+        self._game = GameState.deserialize(checkpoint["game_state"])
+        self.episode_seed_id = checkpoint["episode_seed_id"]
+        self._game_seed = checkpoint["game_seed"]
+        self._prev_score = checkpoint["prev_score"]
+        self._prev_score_target = checkpoint["prev_score_target"]
+        self._prev_blinds_beaten = checkpoint["prev_blinds_beaten"]
+
+        obs = self._encode_observation()
+        info = self._build_info()
+        return obs, info
+
+    @classmethod
+    def from_seed_id(
+        cls,
+        seed_id: str,
+        config: GameConfig | None = None,
+        config_preset: str | None = None,
+        render_mode: str | None = None,
+    ) -> tuple["BalatroEnv", np.ndarray, dict[str, Any]]:
+        """Create an environment and start the game encoded by a seed ID.
+
+        This lets players share seed IDs (like roguelite seeds) to replay
+        the same game.
+
+        Args:
+            seed_id: A seed string in ``YYYYMMDD-HHMM-XXXXXXXX`` format.
+            config: GameConfig to use (overrides preset).
+            config_preset: Difficulty preset if no config given.
+            render_mode: Gymnasium render mode.
+
+        Returns:
+            (env, obs, info) — ready to play.
+        """
+        parsed = parse_seed_id(seed_id)
+        game_seed = parsed["game_seed"]
+
+        env = cls(config=config, config_preset=config_preset, render_mode=render_mode)
+        obs, info = env.reset(seed=game_seed)
+        # Overwrite the auto-generated seed ID with the original one
+        # so the timestamp portion is preserved
+        env.episode_seed_id = seed_id
+        info["episode_seed_id"] = seed_id
+        return env, obs, info
 
     # -------------------------------------------------------------------
     # Rendering

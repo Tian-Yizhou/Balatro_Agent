@@ -13,6 +13,8 @@ A Gymnasium-compatible environment for the Balatro card game, designed for reinf
 - [Difficulty Presets](#difficulty-presets)
 - [Custom Configuration](#custom-configuration)
 - [Training with PPO (sb3-contrib)](#training-with-ppo-sb3-contrib)
+- [Recording and Logging](#recording-and-logging)
+- [Episode Seed IDs and State Resume](#episode-seed-ids-and-state-resume)
 - [Game Mechanics Reference](#game-mechanics-reference)
 - [API Reference](#api-reference)
 
@@ -484,6 +486,291 @@ from stable_baselines3.common.env_util import make_vec_env
 env = make_vec_env("Balatro-Easy-v0", n_envs=8)
 model = MaskablePPO("MlpPolicy", env, verbose=1)
 model.learn(total_timesteps=2_000_000)
+```
+
+---
+
+## Recording and Logging
+
+The package includes two Gymnasium wrappers for data collection: **RolloutRecorder** (per-step trajectory data for RL training) and **EpisodeStatsRecorder** (per-episode summary statistics for analysis). Both are composable and can be used independently or together.
+
+```bash
+# pyarrow is required for EpisodeStatsRecorder
+pip install pyarrow
+# or install with the recording extra:
+pip install -e ".[recording]"
+```
+
+### RolloutRecorder — Trajectory Data for RL Training
+
+Records every `(obs, action, reward, done)` transition. Each episode produces one compressed `.npz` file. Use these for offline RL, imitation learning, or replay buffers.
+
+```python
+import balatro_gym
+import gymnasium as gym
+from balatro_gym.wrappers import RolloutRecorder
+
+env = gym.make("Balatro-Easy-v0")
+env = RolloutRecorder(env, save_dir="data/rollouts")
+
+# Play episodes — .npz files are saved automatically on termination
+for seed in range(100):
+    obs, info = env.reset(seed=seed)
+    done = False
+    while not done:
+        mask = info["action_mask"]
+        action = ...  # your agent's action
+        obs, reward, term, trunc, info = env.step(action)
+        done = term or trunc
+```
+
+**Loading rollout data:**
+
+```python
+data = RolloutRecorder.load("data/rollouts/rollout_20260418_143022_000000.npz")
+
+data["obs"]         # shape (T+1, obs_dim), float32 — observations (includes terminal obs)
+data["actions"]     # shape (T,), int32 — actions taken
+data["rewards"]     # shape (T,), float32 — rewards received
+data["terminated"]  # shape (T,), bool
+data["truncated"]   # shape (T,), bool
+data["phases"]      # shape (T,), uint8 — game phase (0=play, 1=shop, 2=game_over, 3=game_won)
+data["antes"]       # shape (T,), uint8 — ante number at each step
+data["scores"]      # shape (T,), int32 — cumulative score at each step
+data["money"]       # shape (T,), int16 — money at each step
+```
+
+**With action masks** (for offline masked-action training):
+
+```python
+env = RolloutRecorder(env, save_dir="data/rollouts", save_action_mask=True)
+
+# After loading:
+data = RolloutRecorder.load("data/rollouts/rollout_20260418_143022_000000.npz")
+data["action_masks"]  # shape (T, 446), bool — valid actions at each step
+```
+
+Action masks are bit-packed on disk for efficiency and automatically unpacked when loaded.
+
+**File naming:** `rollout_{session_timestamp}_{episode_id:06d}.npz` — unique across sessions and episodes.
+
+**File size:** A typical Easy episode (~100-300 steps) compresses to ~50-200 KB.
+
+### EpisodeStatsRecorder — Game Summary Statistics
+
+Records one row per completed episode to a Parquet file. Ideal for tracking win rates, comparing agents, and statistical analysis.
+
+```python
+import balatro_gym
+import gymnasium as gym
+from balatro_gym.wrappers import EpisodeStatsRecorder
+
+env = gym.make("Balatro-Easy-v0")
+env = EpisodeStatsRecorder(env, save_path="data/results/experiment_01.parquet")
+
+for seed in range(1000):
+    obs, info = env.reset(seed=seed)
+    done = False
+    while not done:
+        action = ...
+        obs, reward, term, trunc, info = env.step(action)
+        done = term or trunc
+
+env.close()  # important: flushes remaining buffered rows
+```
+
+**Loading and analyzing results:**
+
+```python
+import pandas as pd
+
+df = pd.read_parquet("data/results/experiment_01.parquet")
+
+print(f"Win rate: {df['won'].mean():.1%}")
+print(f"Avg antes beaten: {df['antes_beaten'].mean():.1f}")
+print(f"Avg max score: {df['max_score'].mean():.0f}")
+print(f"Avg final money: {df['final_money'].mean():.1f}")
+print(f"Avg steps/episode: {df['total_steps'].mean():.0f}")
+```
+
+**Columns recorded:**
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `episode_id` | int32 | Sequential episode counter (0-based) |
+| `timestamp` | float64 | Unix timestamp when episode ended |
+| `seed` | int64 | Seed passed to `reset()`, -1 if None |
+| `won` | bool | True if all antes were beaten |
+| `antes_beaten` | int32 | Full antes beaten (blinds_beaten // 3) |
+| `blinds_beaten` | int32 | Total blinds beaten |
+| `total_steps` | int32 | Steps taken in the episode |
+| `total_hands_played` | int32 | Poker hands played (not discards) |
+| `total_reward` | float32 | Sum of rewards across the episode |
+| `max_score` | int64 | Highest score achieved in any single blind |
+| `final_money` | int32 | Money at episode end |
+| `final_ante` | int32 | Ante number at episode end |
+| `num_jokers_final` | int32 | Jokers held at episode end |
+| `num_consumables_final` | int32 | Consumables held at episode end |
+| `max_ante_reached` | int32 | Highest ante entered |
+| `max_blinds_beaten` | int32 | Total blinds beaten |
+| `play_actions` | int32 | Count of play actions |
+| `discard_actions` | int32 | Count of discard actions |
+| `buy_actions` | int32 | Count of buy actions |
+| `sell_actions` | int32 | Count of sell actions |
+| `reroll_actions` | int32 | Count of reroll actions |
+| `skip_actions` | int32 | Count of skip actions |
+
+**File size:** ~2-4 KB per 1000 episodes (Snappy-compressed Parquet).
+
+### Using Both Wrappers Together
+
+```python
+env = gym.make("Balatro-Easy-v0")
+env = RolloutRecorder(env, save_dir="data/rollouts")
+env = EpisodeStatsRecorder(env, save_path="data/results/run_001.parquet")
+
+# RolloutRecorder captures every transition to .npz
+# EpisodeStatsRecorder captures game summaries to .parquet
+```
+
+### Comparing Agents
+
+```python
+import pandas as pd
+
+df_random = pd.read_parquet("data/results/random_agent.parquet")
+df_ppo = pd.read_parquet("data/results/ppo_agent.parquet")
+
+comparison = pd.DataFrame({
+    "Random": [df_random["won"].mean(), df_random["antes_beaten"].mean()],
+    "PPO":    [df_ppo["won"].mean(),    df_ppo["antes_beaten"].mean()],
+}, index=["Win Rate", "Avg Antes Beaten"])
+
+print(comparison)
+```
+
+---
+
+## Episode Seed IDs and State Resume
+
+### Seed IDs
+
+Every episode is assigned a unique, human-readable seed ID in the format:
+
+```
+YYYYMMDD-HHMM-XXXXXXXX
+```
+
+- **YYYYMMDD-HHMM** — UTC timestamp of episode creation (minute precision)
+- **XXXXXXXX** — 8-character base-36 encoding of the game seed (0-9, A-Z)
+
+This supports over 2.8 trillion unique seeds. The game seed fully determines the game (deck shuffle, shop offerings, boss blind selection), so sharing a seed ID lets another player start the exact same game — just like roguelite seeds.
+
+```python
+import balatro_gym
+import gymnasium as gym
+
+env = gym.make("Balatro-Easy-v0")
+obs, info = env.reset(seed=42)
+
+seed_id = info["episode_seed_id"]
+print(seed_id)  # e.g., "20260418-1430-00000016"
+```
+
+**Replay a game from a seed ID:**
+
+```python
+from balatro_gym.envs.balatro_env import BalatroEnv
+from balatro_gym.envs.configs import GameConfig
+
+# Another player can start the same game:
+env, obs, info = BalatroEnv.from_seed_id(
+    "20260418-1430-00000016",
+    config=GameConfig.easy(),
+)
+# obs is identical to the original game's initial observation
+```
+
+**Parse a seed ID:**
+
+```python
+from balatro_gym.core.seed_id import parse_seed_id, seed_id_to_game_seed
+
+parsed = parse_seed_id("20260418-1430-00000016")
+# {'timestamp': '20260418-1430', 'game_seed': 42, 'seed_str': '00000016'}
+
+game_seed = seed_id_to_game_seed("20260418-1430-00000016")
+# 42
+```
+
+### Save and Resume State
+
+The environment supports full state checkpointing. You can save the complete game state at any point and resume from it later — including the RNG state, so the game continues deterministically.
+
+**Save a checkpoint:**
+
+```python
+env = BalatroEnv(config=GameConfig.easy(seed=42))
+obs, info = env.reset(seed=42)
+
+# Play some steps...
+for _ in range(20):
+    mask = info["action_mask"]
+    valid = np.where(mask)[0]
+    obs, _, term, _, info = env.step(int(valid[0]))
+    if term:
+        break
+
+# Save the full state
+checkpoint = env.save_state()
+
+# checkpoint is a JSON-compatible dict — save it however you like:
+import json
+with open("checkpoint.json", "w") as f:
+    json.dump(checkpoint, f)
+```
+
+**Resume from a checkpoint:**
+
+```python
+import json
+
+with open("checkpoint.json") as f:
+    checkpoint = json.load(f)
+
+env = BalatroEnv(config=GameConfig.easy())
+env.reset(seed=0)  # dummy reset to initialize
+obs, info = env.load_state(checkpoint)
+
+# Continue playing from the exact saved point
+mask = info["action_mask"]
+# ... the game continues as if it was never interrupted
+```
+
+**Replay from a rollout file:**
+
+Since rollout `.npz` files store the episode seed ID, you can replay any recorded game:
+
+```python
+from balatro_gym.wrappers import RolloutRecorder
+from balatro_gym.envs.balatro_env import BalatroEnv, CARD_SUBSETS, PLAY_OFFSET, DISCARD_OFFSET
+from balatro_gym.envs.configs import GameConfig
+
+# Load a rollout
+data = RolloutRecorder.load("data/rollouts/rollout_20260418_1430_000042.npz")
+seed_id = data["episode_seed_id"]
+actions = data["actions"]
+
+# Recreate the game
+env, obs, info = BalatroEnv.from_seed_id(seed_id, config=GameConfig.easy())
+
+# Replay to step N, then continue with new actions
+N = 50
+for action in actions[:N]:
+    obs, reward, term, trunc, info = env.step(int(action))
+
+# Now at step N — save state and branch off
+checkpoint = env.save_state()
 ```
 
 ---

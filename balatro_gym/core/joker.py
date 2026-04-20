@@ -184,6 +184,10 @@ class BaseJoker:
         """Serialize internal state for observation."""
         return dict(self._internal_state)
 
+    def set_state(self, state: dict[str, Any]) -> None:
+        """Restore internal state from a dict (as returned by ``get_state``)."""
+        self._internal_state.update(state)
+
     def __repr__(self) -> str:
         return f"{self.INFO.name} ({self.INFO.id})"
 
