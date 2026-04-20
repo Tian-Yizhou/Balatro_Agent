@@ -12,6 +12,8 @@ setup(
     ],
     extras_require={
         "recording": ["pyarrow>=12.0"],
+        "rllib": ["ray[rllib]>=2.10.0", "torch>=2.0.0"],
+        "all": ["pyarrow>=12.0", "ray[rllib]>=2.10.0", "torch>=2.0.0"],
     },
     entry_points={
         "gymnasium.envs": ["balatro_gym = balatro_gym"],

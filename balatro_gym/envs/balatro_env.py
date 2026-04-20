@@ -5,8 +5,8 @@ Wraps the core GameState with a Gymnasium-compatible API:
 - Flat observation vector (normalized floats)
 - Reward shaping for RL training
 
-Designed for compatibility with sb3-contrib MaskablePPO and standard Gymnasium
-tooling (env_checker, VecEnv wrappers, etc.).
+Designed for compatibility with Ray RLlib (via the ``BalatroRLlibEnv`` wrapper)
+and standard Gymnasium tooling (env_checker, wrappers, etc.).
 """
 
 from __future__ import annotations
@@ -74,7 +74,7 @@ class BalatroEnv(gym.Env):
     jokers, consumables, game scalars, shop state, and hand levels.
 
     Action: Discrete(446) with action masking via ``action_masks()``.
-    Compatible with sb3-contrib ``MaskablePPO``.
+    Compatible with Ray RLlib PPO via ``BalatroRLlibEnv`` wrapper.
 
     Registered IDs:
         - ``Balatro-v0`` (medium difficulty, default)
@@ -304,7 +304,7 @@ class BalatroEnv(gym.Env):
     def action_masks(self) -> np.ndarray:
         """Return a boolean mask over actions. ``True`` = valid.
 
-        Compatible with sb3-contrib ``MaskablePPO``.
+        Compatible with Ray RLlib action masking via ``BalatroRLlibEnv``.
         """
         mask = np.zeros(TOTAL_ACTIONS, dtype=bool)
 
