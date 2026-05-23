@@ -14,13 +14,19 @@ This project has two parts:
 
 | Component | Status |
 |-----------|--------|
-| Core game engine (cards, hand evaluation, jokers, blinds, shop, game state) | In progress |
-| Gymnasium environment wrapper (observation encoding, action masking) | In progress |
-| Difficulty configs (easy/medium/hard YAML presets) | In progress |
-| Baseline agents (random, heuristic) | Waiting |
-| PPO training pipeline (MaskablePPO via SB3) | Waiting |
-| Curriculum learning (easy -> hard) | Waiting |
-| Evaluation and ablation experiments | Waiting |
+| Core game engine (cards, hand evaluation, jokers, blinds, shop, game state) | Done |
+| Card properties (8 enhancements, 3 editions, 4 seals) | Done |
+| Hand level system (Planet card upgrades) | Done |
+| Consumables (22 Tarots, 12 Planets, 6 Spectrals) | Done |
+| Gymnasium environment wrapper (observation encoding, action masking) | Done |
+| Difficulty configs (easy/medium/hard presets) | Done |
+| Baseline agents (random, heuristic) | Done |
+| Recording wrappers (RolloutRecorder, EpisodeStatsRecorder) | Done |
+| Episode seed IDs and state serialization | Done |
+| Ray RLlib integration (distributed PPO with action masking) | Done |
+| PPO training experiments | TODO |
+| Curriculum learning (easy -> hard) | TODO |
+| Evaluation and ablation experiments | TODO |
 
 ### About Balatro
 
@@ -35,12 +41,33 @@ Consider a state where your current hand cannot satisfy the score requirement, a
 
 **Reasoning and Planning:** An agent must evaluate if its current health (hands remaining) and deck probability allow it to take the "suboptimal" short-term play (the Straight) to ensure its "scaling" is high enough to survive the exponential difficulty of later Antes. This requires the model to value **future state utility** over **immediate reward.**
 
+## Quick Start
+
+```bash
+# Install
+pip install -e ".[all]"
+
+# Basic usage
+import gymnasium as gym
+import balatro_gym
+
+env = gym.make("Balatro-Easy-v0")
+obs, info = env.reset(seed=42)
+mask = info["action_mask"]
+
+# Train with Ray RLlib
+python -m balatro_gym.rllib.train --difficulty easy --num-env-runners 4
+```
+
+See `docs/Balatro_Gym_Guidance.md` for full documentation.
+
 ## Tech Stack
 
-- Python 3.12+
+- Python 3.10+
 - `gymnasium` -- environment API
-- `stable-baselines3` + `sb3-contrib` -- PPO with action masking
+- `ray[rllib]` -- distributed PPO training with action masking
+- `torch` -- neural network backend
 - `numpy` -- numerical computation
-- `pytest` -- testing
+- `pyarrow` -- Parquet recording
+- `pytest` -- testing (383 tests)
 - `pyyaml` -- config loading
-- `tensorboard` or `wandb` -- experiment tracking (optional)
