@@ -1,5 +1,7 @@
 # Balatro-Agent Implementation Plan
 
+> **Status (2026-04-21)**: This is the original implementation plan. The core engine, Gymnasium environment, recording wrappers, seed system, and RLlib integration are all complete (383 tests passing). Training framework was migrated from Stable Baselines3 to Ray RLlib. Remaining work: running training experiments and evaluation.
+
 ## Context
 
 Building a Gymnasium-compatible card game environment inspired by Balatro for COMP_SCI 496 (Agent AI, Northwestern). Two deliverables: (1) a reasoning gym environment, (2) an RL-trained agent using PPO to play the game with structured (numerical) observations.
