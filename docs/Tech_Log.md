@@ -8,12 +8,12 @@ Technical decisions, implementation notes, and key details for the Balatro-Agent
 
 **Decision**: Dropped the LLM-based agent (SFT + GRPO on Qwen2.5-7B) in favor of traditional RL (PPO with MLP policy). Reasons:
 - Limited GPU access makes LLM training impractical (~100-150 GPU-hours for GRPO)
-- PPO with Stable Baselines3 can train on CPU or a single GPU in hours
+- PPO can train on CPU or a single GPU in hours (initially planned SB3, later migrated to Ray RLlib)
 - Structured observations are simpler to implement and debug than text rendering + parsing
 - Still covers core course topics: MDP formulation, reward design, RL training, curriculum learning
 
 **What stays the same**: Core game engine, Gymnasium API, joker system, configurable difficulty.
-**What changes**: Observation = flat numerical vector (not text), action = Discrete(445) with masking (not Dict), agent = MLP policy (not LLM).
+**What changes**: Observation = flat numerical vector (not text), action = Discrete(446) with masking (not Dict), agent = MLP policy (not LLM).
 
 ---
 
@@ -104,27 +104,28 @@ All modules in `balatro_gym/core/` are implemented. Key details:
 
 ## Observation Space Design
 
-**Total dimensions**: ~240 (exact number depends on joker pool size)
+> **Note (2026-04-21)**: The observation space was significantly expanded when card properties (enhancements, editions, seals), consumables, and hand levels were added. The original 52-dim binary hand encoding was replaced with 8 x 68-dim per-card feature vectors.
+
+**Total dimensions**: varies by config (Easy=756, Medium=868, Hard=950)
 
 | Component | Encoding | Dimensions |
 |-----------|----------|------------|
-| Cards in hand | 52-dim binary (1 = in hand) | 52 |
-| Face-down flags | 52-dim binary (1 = face-down) | 52 |
-| Joker slots | 5 x (num_jokers+1) one-hot | 5 x 31 = 155 |
-| Money | normalized by 100 | 1 |
-| Ante | normalized by num_antes | 1 |
+| Hand cards | 8 x 68-dim (52 card one-hot + 8 enhancement + 3 edition + 4 seal + 1 face_down) | 544 |
+| Joker slots | max_jokers x (num_joker_types+1) one-hot | varies |
+| Consumable slots | 2 x (num_consumable_types+1) one-hot | varies |
+| Hand levels | 12 x 3 (level, chips, mult normalized) | 36 |
+| Money | normalized | 1 |
+| Ante | normalized | 1 |
 | Blind type | 3-dim one-hot | 3 |
 | Score target | log-normalized | 1 |
-| Current score / target | ratio, capped at 2 | 1 |
+| Score progress | ratio | 1 |
 | Hands remaining | normalized | 1 |
 | Discards remaining | normalized | 1 |
-| Deck size | normalized by 52 | 1 |
+| Deck size | normalized | 1 |
 | Phase | 2-dim one-hot (play, shop) | 2 |
-| Shop offerings | 2 x (joker one-hot + cost + sold) | ~66 |
+| Shop offerings | joker slots + consumable slot | varies |
 
-**Card index formula**: `suit * 13 + (rank - 2)`. Example: K of spades = 3*13 + 11 = 50.
-
-**Why 52-dim binary for hand** (not 8 x card_encoding): Binary bitmap is simpler, fixed-size regardless of hand size, and naturally encodes "which cards exist" rather than "what's in each slot." The neural network doesn't need to track card ordering within the hand.
+**Per-card feature (68 dims)**: 52-dim one-hot identifying which card + 8-dim enhancement one-hot + 3-dim edition one-hot + 4-dim seal one-hot + 1-dim face_down flag. This replaces the original binary bitmap approach to support card properties.
 
 **Why one-hot for joker slots** (not bitmap): Joker ORDER matters for scoring. Slot 0 = leftmost joker, applied first. A bitmap would lose ordering information.
 
@@ -132,7 +133,9 @@ All modules in `balatro_gym/core/` are implemented. Key details:
 
 ## Action Space Design
 
-**Total: 445 discrete actions**
+> **Note (2026-04-21)**: Action space expanded from 445 to 446 when consumable buy slot was added.
+
+**Total: 446 discrete actions**
 
 Pre-computed at env init:
 ```python
@@ -149,12 +152,12 @@ for size in range(1, 6):
 |-------------|---------|
 | 0-217 | Play card subset (index into card_subsets) |
 | 218-435 | Discard card subset (same mapping, offset by 218) |
-| 436-437 | Buy shop slot 0 or 1 |
-| 438-442 | Sell joker from slot 0-4 |
-| 443 | Reroll shop |
-| 444 | Skip shop (advance to next blind) |
+| 436-438 | Buy shop slot 0, 1 (jokers), or 2 (consumable) |
+| 439-443 | Sell joker from slot 0-4 |
+| 444 | Reroll shop |
+| 445 | Skip shop (advance to next blind) |
 
-**Action mask**: boolean array of length 445. During play phase, only 0-435 can be True. During shop phase, only 436-444 can be True. Further filtered by game state (e.g., can't discard if discards_remaining == 0, can't buy if can't afford).
+**Action mask**: boolean array of length 446. During play phase, only 0-435 can be True. During shop phase, only 436-445 can be True. Further filtered by game state (e.g., can't discard if discards_remaining == 0, can't buy if can't afford).
 
 ---
 
@@ -171,17 +174,16 @@ The asymmetric win/lose rewards (+10 vs -1) reflect that winning is rare and sho
 
 ---
 
-## Dependencies (Updated)
+## Dependencies (Updated 2026-04-21)
 
 ```
 gymnasium>=0.29.0
 numpy>=1.24.0
-stable-baselines3>=2.0.0
-sb3-contrib>=2.0.0
 torch>=2.0.0
+ray[rllib]>=2.10.0
 pytest>=7.0.0
 pyyaml>=6.0
-tensorboard>=2.0.0
+pyarrow>=12.0
 ```
 
-Note: `transformers`, `trl`, `vllm`, `peft` are NO LONGER needed after the pivot to traditional RL.
+Note: `stable-baselines3` and `sb3-contrib` were originally planned but replaced by `ray[rllib]` for distributed rollout collection. `transformers`, `trl`, `vllm`, `peft` are NOT needed after the pivot to traditional RL.

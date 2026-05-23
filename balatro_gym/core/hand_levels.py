@@ -85,7 +85,7 @@ class HandLevelManager:
         Matches Lua: level_up_hand(card, hand, instant, amount)
         """
         data = self._levels[hand_type]
-        data.level = max(0, data.level + amount)
+        data.level = max(1, data.level + amount)
 
     def get_all_levels(self) -> dict[HandType, HandLevelData]:
         """Return a copy of all hand levels (for observation)."""
