@@ -26,6 +26,7 @@ from balatro_gym.core.joker import get_all_joker_ids
 from balatro_gym.core.consumable import get_all_consumable_ids, ConsumableType
 from balatro_gym.core.seed_id import generate_seed_id, parse_seed_id
 from balatro_gym.envs.configs import GameConfig
+from balatro_gym.envs.rewards import DefaultReward, RewardContext, RewardFunction
 
 
 # ---------------------------------------------------------------------------
@@ -96,13 +97,17 @@ class BalatroEnv(gym.Env):
         self,
         config: GameConfig | None = None,
         config_preset: str | None = None,
+        config_path: str | None = None,
         render_mode: str | None = None,
+        reward_fn: RewardFunction | None = None,
     ):
         super().__init__()
 
-        # Resolve config
+        # Resolve config (priority: config > config_path > config_preset > default)
         if config is not None:
             self.config = config
+        elif config_path is not None:
+            self.config = GameConfig.from_file(config_path)
         elif config_preset == "easy":
             self.config = GameConfig.easy()
         elif config_preset == "hard":
@@ -113,6 +118,7 @@ class BalatroEnv(gym.Env):
             raise ValueError(f"Unknown config preset: {config_preset!r}")
 
         self.render_mode = render_mode
+        self.reward_fn: RewardFunction = reward_fn or DefaultReward()
 
         # Build joker ID -> index mapping for one-hot encoding
         self._joker_ids = sorted(self.config.joker_pool)
@@ -255,37 +261,43 @@ class BalatroEnv(gym.Env):
         """
         assert self._game is not None, "Must call reset() before step()"
 
-        reward = 0.0
         prev_blinds = self._game.blinds_beaten
         prev_score = self._game.current_score
         score_target = self._game.score_target
 
         # Execute action
+        action_valid = True
         if self._game.phase == GamePhase.PLAY:
-            reward += self._execute_play_action(action)
+            action_valid = self._execute_play_action(action)
         elif self._game.phase == GamePhase.SHOP:
-            reward += self._execute_shop_action(action)
+            action_valid = self._execute_shop_action(action)
 
-        # Reward shaping: score progress
-        if self._game.phase == GamePhase.PLAY and score_target > 0:
-            new_score = self._game.current_score
-            score_delta = (new_score - prev_score) / score_target
-            reward += np.clip(score_delta * 0.01, 0.0, 0.01)
+        # Terminal check
+        won = self._game.phase == GamePhase.GAME_WON
+        lost = self._game.phase == GamePhase.GAME_OVER
+        terminated = won or lost
 
-        # Reward for beating a blind
-        if self._game.blinds_beaten > prev_blinds:
-            total_blinds = self._game.blind_manager.total_blinds
-            progress_bonus = self._game.blinds_beaten / total_blinds
-            reward += 1.0 + progress_bonus
-
-        # Terminal rewards
-        terminated = False
-        if self._game.phase == GamePhase.GAME_WON:
-            reward += 10.0
-            terminated = True
-        elif self._game.phase == GamePhase.GAME_OVER:
-            reward += -1.0
-            terminated = True
+        # Build reward context and compute reward
+        ctx = RewardContext(
+            phase=self._game.phase.value if not terminated else (
+                "game_won" if won else "game_over"
+            ),
+            action_valid=action_valid,
+            prev_score=prev_score,
+            new_score=self._game.current_score,
+            score_target=score_target,
+            prev_blinds_beaten=prev_blinds,
+            new_blinds_beaten=self._game.blinds_beaten,
+            total_blinds=self._game.blind_manager.total_blinds,
+            blind_just_beaten=self._game.blinds_beaten > prev_blinds,
+            won=won,
+            lost=lost,
+            ante=self._game.ante,
+            money=self._game.money,
+            hands_remaining=self._game.hands_remaining,
+            discards_remaining=self._game.discards_remaining,
+        )
+        reward = self.reward_fn(ctx)
 
         # Update tracking
         self._prev_score = self._game.current_score
@@ -353,8 +365,8 @@ class BalatroEnv(gym.Env):
     # Action execution
     # -------------------------------------------------------------------
 
-    def _execute_play_action(self, action: int) -> float:
-        """Execute a play or discard action. Returns any immediate reward."""
+    def _execute_play_action(self, action: int) -> bool:
+        """Execute a play or discard action. Returns True if the action was valid."""
         assert self._game is not None
 
         if PLAY_OFFSET <= action < PLAY_OFFSET + NUM_PLAY_ACTIONS:
@@ -363,8 +375,8 @@ class BalatroEnv(gym.Env):
             try:
                 self._game.play_hand(card_indices)
             except ValueError:
-                return -0.01
-            return 0.0
+                return False
+            return True
 
         elif DISCARD_OFFSET <= action < DISCARD_OFFSET + NUM_DISCARD_ACTIONS:
             subset_idx = action - DISCARD_OFFSET
@@ -372,35 +384,35 @@ class BalatroEnv(gym.Env):
             try:
                 self._game.discard(card_indices)
             except ValueError:
-                return -0.01
-            return 0.0
+                return False
+            return True
 
-        return -0.01
+        return False
 
-    def _execute_shop_action(self, action: int) -> float:
-        """Execute a shop action. Returns any immediate reward."""
+    def _execute_shop_action(self, action: int) -> bool:
+        """Execute a shop action. Returns True if the action was valid."""
         assert self._game is not None
 
         if BUY_OFFSET <= action < BUY_OFFSET + NUM_BUY_ACTIONS:
             slot_idx = action - BUY_OFFSET
             self._game.shop_buy(slot_idx)
-            return 0.0
+            return True
 
         elif SELL_OFFSET <= action < SELL_OFFSET + NUM_SELL_ACTIONS:
             joker_idx = action - SELL_OFFSET
             if joker_idx < len(self._game.jokers):
                 self._game.shop_sell(joker_idx)
-            return 0.0
+            return True
 
         elif action == REROLL_ACTION:
             self._game.shop_reroll()
-            return 0.0
+            return True
 
         elif action == SKIP_ACTION:
             self._game.shop_skip()
-            return 0.0
+            return True
 
-        return -0.01
+        return False
 
     # -------------------------------------------------------------------
     # Observation encoding
