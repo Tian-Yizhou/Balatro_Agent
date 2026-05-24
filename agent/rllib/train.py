@@ -33,6 +33,7 @@ from ray.rllib.algorithms.ppo import PPOConfig
 from ray.rllib.core.rl_module.rl_module import RLModuleSpec
 
 from agent.rllib.action_mask_model import ActionMaskingTorchRLModule
+from agent.rllib.callbacks import BalatroMetricsCallback
 from agent.rllib.env_wrapper import make_balatro_env
 
 
@@ -233,6 +234,8 @@ def build_config(args: argparse.Namespace) -> PPOConfig:
                 },
             ),
         )
+        # -- Custom metrics callback --
+        .callbacks(BalatroMetricsCallback)
     )
     return config
 
@@ -257,18 +260,47 @@ def train(args: argparse.Namespace) -> str | None:
 
     best_reward = float("-inf")
     final_checkpoint = None
+    metrics_history: list[dict] = []
 
     for i in range(1, args.num_iterations + 1):
         result = algo.train()
 
-        mean_reward = result["env_runners"]["episode_reward_mean"]
-        episodes = result["env_runners"]["num_episodes_lifetime"]
-        timesteps = result["env_runners"]["num_env_steps_sampled_lifetime"]
+        # Extract standard metrics
+        env_r = result["env_runners"]
+        mean_reward = env_r.get("episode_return_mean", 0.0)
+        episodes = env_r.get("num_episodes_lifetime", 0)
+        timesteps = env_r.get("num_env_steps_sampled_lifetime", 0)
+        ep_len_mean = env_r.get("episode_len_mean", 0.0)
+
+        # Extract game-specific metrics from callback
+        game_won = env_r.get("game_won", 0.0)
+        blinds_beaten = env_r.get("blinds_beaten", 0.0)
+        ante_reached = env_r.get("ante_reached", 0.0)
+        final_money = env_r.get("final_money", 0.0)
+        final_score = env_r.get("final_score", 0.0)
+
+        # Store metrics for later analysis
+        iter_metrics = {
+            "iteration": i,
+            "timesteps": timesteps,
+            "episodes": episodes,
+            "episode_return_mean": mean_reward,
+            "episode_len_mean": ep_len_mean,
+            "win_rate": game_won,
+            "blinds_beaten_mean": blinds_beaten,
+            "ante_reached_mean": ante_reached,
+            "final_money_mean": final_money,
+            "final_score_mean": final_score,
+        }
+        metrics_history.append(iter_metrics)
 
         print(
             f"Iter {i:4d} | "
-            f"reward_mean={mean_reward:8.2f} | "
-            f"episodes={episodes} | "
+            f"reward={mean_reward:7.2f} | "
+            f"win_rate={game_won:.2f} | "
+            f"blinds={blinds_beaten:.1f} | "
+            f"ante={ante_reached:.1f} | "
+            f"ep_len={ep_len_mean:.0f} | "
             f"timesteps={timesteps}"
         )
 
@@ -293,6 +325,13 @@ def train(args: argparse.Namespace) -> str | None:
 
     algo.stop()
     ray.shutdown()
+
+    # Save metrics history to JSON
+    import json
+    metrics_path = checkpoint_dir / "metrics.json"
+    with open(metrics_path, "w") as f:
+        json.dump(metrics_history, f, indent=2)
+    print(f"\nMetrics saved to: {metrics_path}")
 
     print(f"\nTraining complete. Best mean reward: {best_reward:.2f}")
     if final_checkpoint:
