@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from balatro_gym.envs.balatro_env import BalatroEnv, TOTAL_ACTIONS
+from balatro_gym.envs.balatro_env import TOTAL_ACTIONS
 
 
 class RandomAgent:
@@ -20,7 +20,7 @@ class RandomAgent:
             return 0
         return int(self.rng.choice(valid))
 
-    def run_episode(self, env: BalatroEnv) -> dict:
+    def run_episode(self, env) -> dict:
         """Run a full episode and return stats."""
         obs, info = env.reset()
         total_reward = 0.0

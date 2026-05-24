@@ -14,7 +14,6 @@ import numpy as np
 
 from balatro_gym.core.hand_evaluator import evaluate_hand, HAND_BASE_SCORES
 from balatro_gym.envs.balatro_env import (
-    BalatroEnv,
     TOTAL_ACTIONS,
     CARD_SUBSETS,
     PLAY_OFFSET,
@@ -39,7 +38,7 @@ class HeuristicAgent:
     def __init__(self, seed: int | None = None):
         self.rng = np.random.default_rng(seed)
 
-    def act(self, obs: np.ndarray, info: dict, env: BalatroEnv) -> int:
+    def act(self, obs: np.ndarray, info: dict, env) -> int:
         mask = info["action_mask"]
         phase = info["phase"]
 
@@ -51,7 +50,7 @@ class HeuristicAgent:
             valid = np.where(mask)[0]
             return int(valid[0]) if len(valid) > 0 else 0
 
-    def _play_action(self, mask: np.ndarray, env: BalatroEnv) -> int:
+    def _play_action(self, mask: np.ndarray, env) -> int:
         """Choose the best play or discard action."""
         game = env._game
         assert game is not None
@@ -147,7 +146,7 @@ class HeuristicAgent:
 
         return -1
 
-    def _shop_action(self, mask: np.ndarray, env: BalatroEnv) -> int:
+    def _shop_action(self, mask: np.ndarray, env) -> int:
         """Buy cheapest affordable joker, else skip."""
         game = env._game
         assert game is not None
@@ -174,7 +173,7 @@ class HeuristicAgent:
         valid = np.where(mask)[0]
         return int(valid[0]) if len(valid) > 0 else 0
 
-    def run_episode(self, env: BalatroEnv) -> dict:
+    def run_episode(self, env) -> dict:
         """Run a full episode and return stats."""
         obs, info = env.reset()
         total_reward = 0.0

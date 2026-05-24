@@ -6,23 +6,29 @@ Quick-reference guide to the Balatro-Agent codebase. Designed for AI assistants 
 
 A Gymnasium-compatible card game environment inspired by Balatro (a roguelite deck-building poker game), plus an RL training pipeline using Ray RLlib. Built as a final project for COMP_SCI 496 (Agent AI) at Northwestern.
 
-- **Environment**: `balatro_gym` Python package, installable via `pip install -e .`
-- **Training**: Ray RLlib PPO with action masking, configurable distributed resources
-- **Tests**: 383 tests across 13 files, run with `pytest tests/`
+Two independent packages in one repo:
+- **`balatro_gym`** — Environment package (gymnasium + numpy + pyyaml only). Installable via `pip install -e .`
+- **`agent`** — Training/baselines package (depends on balatro_gym + Ray + Torch)
+- **Tests**: 382 tests across 13 files, run with `pytest tests/`
 
 ## Directory Layout
 
 ```
 Balatro-Agent/
-├── balatro_gym/              # Main Python package
-│   ├── __init__.py           # Package init; imports envs to trigger Gymnasium registration
+├── balatro_gym/              # ENVIRONMENT PACKAGE (no Ray/Torch dependency)
+│   ├── __init__.py           # make(), make_vec(), version
 │   ├── core/                 # Game engine (no Gymnasium dependency)
 │   ├── envs/                 # Gymnasium environment wrapper + configs
-│   ├── agents/               # Baseline agents (random, heuristic)
-│   ├── rllib/                # Ray RLlib integration (training, evaluation)
 │   ├── wrappers/             # Recording wrappers (trajectories, statistics)
 │   ├── rendering/            # (placeholder — not yet implemented)
 │   └── utils/                # (placeholder — not yet implemented)
+├── agent/                    # AGENT PACKAGE (depends on balatro_gym + Ray + Torch)
+│   ├── __init__.py
+│   ├── baselines/            # Baseline agents (random, heuristic)
+│   └── rllib/                # Ray RLlib integration (training, evaluation)
+├── configs/                  # YAML configuration files
+│   ├── defaults.yaml         # Full default config (medium preset, all fields)
+│   └── example_custom.yaml   # Example: override a few fields from easy preset
 ├── tests/                    # Unit and integration tests
 ├── docs/                     # Documentation
 │   ├── Balatro_Gym_Guidance.md   # Full usage guide (obs space, actions, training, recording)
@@ -33,9 +39,18 @@ Balatro-Agent/
 ├── CLAUDE.md                 # Project context for Claude Code
 ├── Manual.md                 # This file
 ├── README.md                 # Public project README
-├── setup.py                  # Package installation (extras: recording, rllib, all)
+├── setup.py                  # Package installation (extras: recording, agent, all)
 └── requirements.txt          # Direct dependencies
 ```
+
+### Package Dependency
+
+```
+balatro_gym (environment)  ←── agent (training/baselines)
+    gymnasium, numpy, pyyaml   ray[rllib], torch
+```
+
+One-way dependency: `agent` imports from `balatro_gym`. The environment package has zero dependency on agent code.
 
 ---
 
@@ -226,8 +241,8 @@ Key methods:
 
 Observation dimensions vary by config: Easy=756, Medium=868, Hard=950.
 
-### `configs.py` (172 lines)
-Difficulty presets.
+### `configs.py`
+Difficulty presets and YAML config system.
 
 | Preset | Antes | Hands/Round | Discards | Start Money | Joker Pool | Consumable Pool |
 |--------|-------|-------------|----------|-------------|------------|-----------------|
@@ -235,12 +250,31 @@ Difficulty presets.
 | Medium | 6 | 4 | 3 | $4 | 20 jokers | Planets + all Tarots + simple Spectrals |
 | Hard | 8 | 4 | 3 | $4 | 30 jokers | All consumables |
 
-### `envs/__init__.py` (24 lines)
+Key methods:
+- `GameConfig.from_file(path, base="medium")` — Load YAML, merge over base preset. The YAML `base` key selects the preset. Only specified fields override.
+- `GameConfig.to_yaml(path)` — Serialize config to YAML.
+- `GameConfig.to_dict()` — Serialize to plain dict.
+
+### `envs/__init__.py`
 Registers four Gymnasium IDs: `Balatro-v0` (medium), `Balatro-Easy-v0`, `Balatro-Medium-v0`, `Balatro-Hard-v0`.
+
+### `balatro_gym/__init__.py` — Top-level API
+Convenience factory functions (MineDojo-style):
+
+| Export | Description |
+|--------|-------------|
+| `balatro_gym.make(preset, config=, config_path=, seed=)` | Create a single env |
+| `balatro_gym.make_vec(preset, num_envs=, seed=, vectorization_mode=)` | Create parallel envs |
+
+### YAML Config Files (`configs/`)
+- `configs/defaults.yaml` — Full reference config showing every field (medium preset)
+- `configs/example_custom.yaml` — Example: start from easy, override a few fields
 
 ---
 
-## RLlib Integration (`balatro_gym/rllib/`)
+## RLlib Integration (`agent/rllib/`)
+
+Lives in the `agent` package (not `balatro_gym`). Depends on Ray and Torch.
 
 ### `env_wrapper.py` (121 lines)
 Wraps `BalatroEnv` for RLlib action masking.
@@ -262,7 +296,7 @@ PPO RLModule with action masking.
 Extends `PPOTorchRLModule`. Strips `action_mask` from Dict obs, passes clean obs to parent network, then masks logits before distribution construction.
 
 ### `train.py` (309 lines)
-CLI training script.
+CLI training script. Run with `python -m agent.rllib.train`.
 
 | Export | Type | Description |
 |--------|------|-------------|
@@ -279,16 +313,16 @@ Key CLI flags:
 - `--checkpoint-dir`, `--checkpoint-freq`
 
 ### `evaluate.py` (236 lines)
-CLI evaluation script. Loads checkpoint, runs episodes, prints aggregate stats.
+CLI evaluation script. Run with `python -m agent.rllib.evaluate`. Loads checkpoint, runs episodes, prints aggregate stats.
 
 ### `rllib/__init__.py` (14 lines)
 Exports: `BalatroRLlibEnv`, `make_balatro_env`, `ActionMaskingTorchRLModule`, `build_config`.
 
 ---
 
-## Agents (`balatro_gym/agents/`)
+## Baseline Agents (`agent/baselines/`)
 
-Framework-independent baseline agents. Neither depends on Ray or Gymnasium wrappers.
+Lives in the `agent` package. Framework-independent baseline agents.
 
 ### `random_agent.py` (43 lines)
 `RandomAgent` — picks uniformly random valid action from the action mask.
@@ -323,7 +357,7 @@ Static method: `EpisodeStatsRecorder.load(path)` — returns PyArrow Table.
 
 ## Tests (`tests/`)
 
-383 tests across 13 files. Run with `pytest tests/` (the RLlib smoke test is marked `@pytest.mark.slow`).
+382 tests across 13 files. Run with `pytest tests/` (the RLlib smoke test is marked `@pytest.mark.slow`).
 
 | File | Tests | What it covers |
 |------|-------|----------------|
@@ -380,15 +414,15 @@ Same pattern: `consumable.py` defines `ConsumableGameView` Protocol. `blind.py` 
 ### Running training
 ```bash
 # Quick local training
-python -m balatro_gym.rllib.train --difficulty easy --num-env-runners 2 --num-iterations 50
+python -m agent.rllib.train --difficulty easy --num-env-runners 2 --num-iterations 50
 
 # GPU training with more workers
-python -m balatro_gym.rllib.train --difficulty easy --num-env-runners 8 --num-gpus-per-learner 1
+python -m agent.rllib.train --difficulty easy --num-env-runners 8 --num-gpus-per-learner 1
 ```
 
 ### Evaluating a checkpoint
 ```bash
-python -m balatro_gym.rllib.evaluate --checkpoint path/to/checkpoint --num-episodes 100 --difficulty easy
+python -m agent.rllib.evaluate --checkpoint path/to/checkpoint --num-episodes 100 --difficulty easy
 ```
 
 ---
@@ -399,19 +433,22 @@ When looking for specific functionality:
 
 | I want to... | Look in |
 |---------------|---------|
-| Understand card scoring | `core/card.py` (chip_value, enhancement effects) |
-| See how hands are detected | `core/hand_evaluator.py` (evaluate_hand) |
-| See the full scoring pipeline | `core/game_state.py` (_apply_scoring) |
-| Find a specific joker | `core/joker.py` (search by ID or class name) |
-| Find a consumable effect | `core/consumable.py` (search by ID) |
-| See blind score targets | `core/blind.py` (get_blind_amount, BlindManager) |
-| See shop mechanics | `core/shop.py` |
-| See observation encoding | `envs/balatro_env.py` (_encode_observation, _compute_obs_dim) |
-| See action masking logic | `envs/balatro_env.py` (action_masks) |
-| See difficulty presets | `envs/configs.py` (GameConfig.easy/medium/hard) |
-| See training CLI args | `rllib/train.py` (parse_args) |
-| See how action masking works in RLlib | `rllib/action_mask_model.py` |
-| See trajectory recording | `wrappers/rollout_recorder.py` |
-| See episode statistics | `wrappers/episode_stats_recorder.py` |
-| See state serialization | `core/game_state.py` (serialize/deserialize), `core/card.py` (to_dict/from_dict) |
-| See seed ID format | `core/seed_id.py` |
+| Create an environment | `balatro_gym/__init__.py` (make, make_vec) |
+| Understand card scoring | `balatro_gym/core/card.py` (chip_value, enhancement effects) |
+| See how hands are detected | `balatro_gym/core/hand_evaluator.py` (evaluate_hand) |
+| See the full scoring pipeline | `balatro_gym/core/game_state.py` (_apply_scoring) |
+| Find a specific joker | `balatro_gym/core/joker.py` (search by ID or class name) |
+| Find a consumable effect | `balatro_gym/core/consumable.py` (search by ID) |
+| See blind score targets | `balatro_gym/core/blind.py` (get_blind_amount, BlindManager) |
+| See shop mechanics | `balatro_gym/core/shop.py` |
+| See observation encoding | `balatro_gym/envs/balatro_env.py` (_encode_observation, _compute_obs_dim) |
+| See action masking logic | `balatro_gym/envs/balatro_env.py` (action_masks) |
+| See difficulty presets | `balatro_gym/envs/configs.py` (GameConfig.easy/medium/hard) |
+| Configure via YAML | `configs/defaults.yaml`, `configs/example_custom.yaml` |
+| See training CLI args | `agent/rllib/train.py` (parse_args) |
+| See how action masking works in RLlib | `agent/rllib/action_mask_model.py` |
+| See baseline agents | `agent/baselines/` (random_agent.py, heuristic_agent.py) |
+| See trajectory recording | `balatro_gym/wrappers/rollout_recorder.py` |
+| See episode statistics | `balatro_gym/wrappers/episode_stats_recorder.py` |
+| See state serialization | `balatro_gym/core/game_state.py` (serialize/deserialize) |
+| See seed ID format | `balatro_gym/core/seed_id.py` |

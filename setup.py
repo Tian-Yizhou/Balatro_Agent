@@ -9,10 +9,11 @@ setup(
     install_requires=[
         "gymnasium>=0.29.0",
         "numpy>=1.24.0",
+        "pyyaml>=6.0",
     ],
     extras_require={
         "recording": ["pyarrow>=12.0"],
-        "rllib": ["ray[rllib]>=2.10.0", "torch>=2.0.0"],
+        "agent": ["ray[rllib]>=2.10.0", "torch>=2.0.0"],
         "all": ["pyarrow>=12.0", "ray[rllib]>=2.10.0", "torch>=2.0.0"],
     },
     entry_points={

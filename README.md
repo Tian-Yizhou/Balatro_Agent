@@ -46,17 +46,27 @@ Consider a state where your current hand cannot satisfy the score requirement, a
 ```bash
 # Install
 pip install -e ".[all]"
+```
 
+```python
 # Basic usage
-import gymnasium as gym
 import balatro_gym
 
-env = gym.make("Balatro-Easy-v0")
+env = balatro_gym.make("easy")
 obs, info = env.reset(seed=42)
 mask = info["action_mask"]
 
+# Parallel environments for data collection
+vec_env = balatro_gym.make_vec("easy", num_envs=8, seed=42)
+obs_batch, infos = vec_env.reset()
+
+# Custom config from YAML
+env = balatro_gym.make(config_path="configs/example_custom.yaml")
+```
+
+```bash
 # Train with Ray RLlib
-python -m balatro_gym.rllib.train --difficulty easy --num-env-runners 4
+python -m agent.rllib.train --difficulty easy --num-env-runners 4
 ```
 
 See `docs/Balatro_Gym_Guidance.md` for full documentation.

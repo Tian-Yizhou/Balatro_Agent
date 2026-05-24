@@ -10,7 +10,7 @@ from gymnasium import spaces
 import balatro_gym  # noqa: F401 — triggers env registration
 from balatro_gym.envs.balatro_env import BalatroEnv, TOTAL_ACTIONS
 from balatro_gym.envs.configs import GameConfig
-from balatro_gym.rllib.env_wrapper import BalatroRLlibEnv, make_balatro_env
+from agent.rllib.env_wrapper import BalatroRLlibEnv, make_balatro_env
 
 
 # -----------------------------------------------------------------------
@@ -156,12 +156,12 @@ class TestMakeBalatroEnv:
 class TestActionMaskingModule:
     def test_import(self):
         """Module class should be importable."""
-        from balatro_gym.rllib.action_mask_model import ActionMaskingTorchRLModule
+        from agent.rllib.action_mask_model import ActionMaskingTorchRLModule
         assert ActionMaskingTorchRLModule is not None
 
     def test_requires_dict_observation_space(self):
         """Should raise ValueError if given a non-Dict observation space."""
-        from balatro_gym.rllib.action_mask_model import _ActionMaskingBase
+        from agent.rllib.action_mask_model import _ActionMaskingBase
 
         with pytest.raises(ValueError, match="Dict"):
             _ActionMaskingBase(
@@ -177,7 +177,7 @@ class TestActionMaskingModule:
 
 class TestTrainConfig:
     def test_parse_args_defaults(self):
-        from balatro_gym.rllib.train import parse_args
+        from agent.rllib.train import parse_args
         args = parse_args([])
         assert args.difficulty == "easy"
         assert args.num_env_runners == 2
@@ -186,7 +186,7 @@ class TestTrainConfig:
         assert args.fcnet_hiddens == [256, 256]
 
     def test_parse_args_custom(self):
-        from balatro_gym.rllib.train import parse_args
+        from agent.rllib.train import parse_args
         args = parse_args([
             "--difficulty", "hard",
             "--num-env-runners", "8",
@@ -203,7 +203,7 @@ class TestTrainConfig:
         assert args.num_iterations == 100
 
     def test_build_config(self):
-        from balatro_gym.rllib.train import parse_args, build_config
+        from agent.rllib.train import parse_args, build_config
         args = parse_args(["--num-env-runners", "0"])
         config = build_config(args)
         # Should be a valid PPOConfig
@@ -218,7 +218,7 @@ class TestTrainConfig:
 
 class TestEvaluateConfig:
     def test_parse_args(self):
-        from balatro_gym.rllib.evaluate import parse_args
+        from agent.rllib.evaluate import parse_args
         args = parse_args([
             "--checkpoint", "/tmp/test_ckpt",
             "--num-episodes", "50",
@@ -246,7 +246,7 @@ class TestRLlibSmoke:
         from ray.tune.registry import register_env
         from ray.rllib.algorithms.ppo import PPOConfig
         from ray.rllib.core.rl_module.rl_module import RLModuleSpec
-        from balatro_gym.rllib.action_mask_model import ActionMaskingTorchRLModule
+        from agent.rllib.action_mask_model import ActionMaskingTorchRLModule
 
         ray.init(num_cpus=2, num_gpus=0, ignore_reinit_error=True)
         try:

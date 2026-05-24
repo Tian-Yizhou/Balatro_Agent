@@ -1,0 +1,104 @@
+# Balatro Gym — Default Configuration (Medium Difficulty)
+#
+# This file shows every configurable field with its default value.
+# These match GameConfig.medium().
+#
+# To create a custom config, copy this file and change only the fields
+# you want. Any field you omit will keep its default value from whichever
+# base preset you choose (see the `base` key below).
+
+# Base preset to start from. Options: easy, medium, hard
+# Fields in this file override the base preset.
+base: medium
+
+# Game structure
+num_antes: 6              # Number of antes (stages) to beat
+hands_per_round: 4        # Hands allowed per blind
+discards_per_round: 3     # Discards allowed per blind
+hand_size: 8              # Cards dealt to hand
+
+# Economy
+starting_money: 4         # Starting dollars
+shop_slots: 2             # Number of shop offerings per visit
+reroll_base_cost: 5       # Cost to reroll shop
+
+# Slots
+max_jokers: 5             # Maximum joker slots
+consumable_slots: 2       # Maximum consumable (tarot/planet/spectral) slots
+
+# Joker pool — which jokers can appear in shops
+joker_pool:
+  # Priority 1 (common)
+  - joker_basic
+  - greedy_joker
+  - lusty_joker
+  - wrathful_joker
+  - gluttonous_joker
+  - jolly_joker
+  - zany_joker
+  - banner
+  - mystic_summit
+  - ice_cream
+  # Priority 2 (uncommon)
+  - raised_fist
+  - fibonacci
+  - even_steven
+  - odd_todd
+  - scholar
+  - business_card
+  - stencil
+  - half_joker
+  - blueprint
+  - dna
+
+# Starting jokers — jokers the player begins with
+starting_joker_ids: []
+
+# Consumable pool — which tarots/planets/spectrals can appear
+consumable_pool:
+  # Planets
+  - c_mercury
+  - c_venus
+  - c_earth
+  - c_mars
+  - c_jupiter
+  - c_saturn
+  - c_uranus
+  - c_neptune
+  - c_pluto
+  - c_planet_x
+  - c_ceres
+  - c_eris
+  # Tarots
+  - c_fool
+  - c_magician
+  - c_high_priestess
+  - c_empress
+  - c_emperor
+  - c_hierophant
+  - c_lovers
+  - c_chariot
+  - c_justice
+  - c_hermit
+  - c_wheel_of_fortune
+  - c_strength
+  - c_hanged_man
+  - c_death
+  - c_temperance
+  - c_devil
+  - c_tower
+  - c_star
+  - c_moon
+  - c_sun
+  - c_judgement
+  - c_world
+  # Simple spectrals
+  - c_talisman
+  - c_deja_vu
+  - c_trance
+  - c_medium
+  - c_aura
+  - c_cryptid
+
+# Random seed (null = random each episode)
+seed: null
