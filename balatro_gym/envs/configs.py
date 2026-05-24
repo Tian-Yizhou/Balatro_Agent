@@ -147,14 +147,48 @@ class GameConfig:
         )
 
     @classmethod
-    def from_file(cls, path: str | Path) -> GameConfig:
-        """Load config from a YAML file."""
+    def from_file(cls, path: str | Path, base: str = "medium") -> GameConfig:
+        """Load config from a YAML file, merging over a base preset.
+
+        Any field specified in the YAML overrides the base preset value.
+        Fields not in the file keep their base preset defaults.
+
+        The special key ``base`` in the YAML selects which preset to use
+        as the starting point (``"easy"``, ``"medium"``, or ``"hard"``).
+        If ``base`` is present in the file, the *base* parameter is ignored.
+
+        Args:
+            path: Path to a YAML config file.
+            base: Default base preset (``"easy"``, ``"medium"``, ``"hard"``).
+                  Overridden by the ``base`` key in the YAML file if present.
+
+        Example YAML file::
+
+            # Start from easy preset, override two fields
+            base: easy
+            num_antes: 2
+            hands_per_round: 6
+        """
         with open(path) as f:
-            data: dict[str, Any] = yaml.safe_load(f)
-        return cls(**data)
+            data: dict[str, Any] = yaml.safe_load(f) or {}
+
+        # Determine base preset
+        preset_name = data.pop("base", base)
+        factory = {"easy": cls.easy, "medium": cls.medium, "hard": cls.hard}
+        if preset_name not in factory:
+            raise ValueError(
+                f"Unknown base preset {preset_name!r}. "
+                f"Choose from: {list(factory)}"
+            )
+        base_config = factory[preset_name]()
+
+        # Merge: YAML values override the base
+        merged = base_config.to_dict()
+        merged.update(data)
+        return cls(**merged)
 
     def to_dict(self) -> dict[str, Any]:
-        """Serialize config to a dictionary."""
+        """Serialize config to a plain dictionary."""
         return {
             "num_antes": self.num_antes,
             "hands_per_round": self.hands_per_round,
@@ -170,3 +204,8 @@ class GameConfig:
             "consumable_pool": list(self.consumable_pool),
             "seed": self.seed,
         }
+
+    def to_yaml(self, path: str | Path) -> None:
+        """Write config to a YAML file."""
+        with open(path, "w") as f:
+            yaml.dump(self.to_dict(), f, default_flow_style=False, sort_keys=False)

@@ -1,0 +1,27 @@
+# Balatro Gym — Example Custom Configuration
+#
+# This shows how to create a custom config. Only specify the fields you
+# want to change. Everything else inherits from the base preset.
+#
+# Usage:
+#   from balatro_gym.envs.configs import GameConfig
+#   config = GameConfig.from_file("configs/example_custom.yaml")
+#
+#   # Or directly with the environment:
+#   from balatro_gym.envs.balatro_env import BalatroEnv
+#   env = BalatroEnv(config_path="configs/example_custom.yaml")
+
+# Start from the easy preset and override a few fields
+base: easy
+
+# Shorter game — only 2 antes
+num_antes: 2
+
+# More generous resources
+hands_per_round: 6
+discards_per_round: 5
+starting_money: 10
+
+# Give the player a starting joker
+starting_joker_ids:
+  - jolly_joker

@@ -7,17 +7,17 @@ control exactly which resources run rollout collection vs. training.
 Examples
 --------
 # Local laptop — 4 CPU rollout workers, train on CPU
-python -m balatro_gym.rllib.train --num-env-runners 4
+python -m agent.rllib.train --num-env-runners 4
 
 # Single GPU training, 8 CPU rollout workers
-python -m balatro_gym.rllib.train --num-env-runners 8 --num-gpus-per-learner 1
+python -m agent.rllib.train --num-env-runners 8 --num-gpus-per-learner 1
 
 # Multi-GPU: 2 learner workers each with 1 GPU, 16 CPU rollout workers
-python -m balatro_gym.rllib.train \
+python -m agent.rllib.train \
     --num-env-runners 16 --num-learners 2 --num-gpus-per-learner 1
 
 # Vectorized envs on each runner (faster sampling)
-python -m balatro_gym.rllib.train \
+python -m agent.rllib.train \
     --num-env-runners 8 --num-envs-per-env-runner 4
 """
 
@@ -32,8 +32,8 @@ import ray
 from ray.rllib.algorithms.ppo import PPOConfig
 from ray.rllib.core.rl_module.rl_module import RLModuleSpec
 
-from balatro_gym.rllib.action_mask_model import ActionMaskingTorchRLModule
-from balatro_gym.rllib.env_wrapper import make_balatro_env
+from agent.rllib.action_mask_model import ActionMaskingTorchRLModule
+from agent.rllib.env_wrapper import make_balatro_env
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

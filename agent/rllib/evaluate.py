@@ -7,12 +7,12 @@ Can also be used for single-episode replay / debugging.
 Examples
 --------
 # Evaluate a checkpoint over 100 episodes
-python -m balatro_gym.rllib.evaluate \
+python -m agent.rllib.evaluate \
     --checkpoint checkpoints/balatro_ppo/checkpoint_000200 \
     --num-episodes 100 --difficulty easy
 
 # GPU inference
-python -m balatro_gym.rllib.evaluate \
+python -m agent.rllib.evaluate \
     --checkpoint checkpoints/balatro_ppo/checkpoint_000200 \
     --num-env-runners 4 --num-gpus-per-env-runner 0
 """
@@ -30,8 +30,8 @@ from ray.rllib.core.rl_module.rl_module import RLModuleSpec
 
 from balatro_gym.envs.balatro_env import TOTAL_ACTIONS
 from balatro_gym.envs.configs import GameConfig
-from balatro_gym.rllib.action_mask_model import ActionMaskingTorchRLModule
-from balatro_gym.rllib.env_wrapper import BalatroRLlibEnv, make_balatro_env
+from agent.rllib.action_mask_model import ActionMaskingTorchRLModule
+from agent.rllib.env_wrapper import BalatroRLlibEnv, make_balatro_env
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

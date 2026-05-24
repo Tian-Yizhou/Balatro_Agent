@@ -97,7 +97,7 @@ def make_balatro_env(config: dict[str, Any]) -> BalatroRLlibEnv:
     Example::
 
         from ray.tune.registry import register_env
-        from balatro_gym.rllib import make_balatro_env
+        from agent.rllib import make_balatro_env
 
         register_env("Balatro", make_balatro_env)
     """

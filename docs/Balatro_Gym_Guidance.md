@@ -411,7 +411,7 @@ starting_joker_ids:
 
 ## Training with PPO (Ray RLlib)
 
-The environment uses [Ray RLlib](https://docs.ray.io/en/latest/rllib/) for distributed PPO training with action masking. The `balatro_gym.rllib` package provides:
+The environment uses [Ray RLlib](https://docs.ray.io/en/latest/rllib/) for distributed PPO training with action masking. The `agent.rllib` package provides:
 
 - **`BalatroRLlibEnv`** — wraps the base env with a Dict observation space (`{"observations": ..., "action_mask": ...}`)
 - **`ActionMaskingTorchRLModule`** — PPO RLModule that masks invalid actions to `-inf` logits
@@ -422,29 +422,29 @@ The environment uses [Ray RLlib](https://docs.ray.io/en/latest/rllib/) for distr
 
 ```bash
 # Minimal: 2 CPU rollout workers, CPU training, easy difficulty
-python -m balatro_gym.rllib.train --difficulty easy --num-env-runners 2
+python -m agent.rllib.train --difficulty easy --num-env-runners 2
 
 # GPU training with 8 CPU rollout workers
-python -m balatro_gym.rllib.train \
+python -m agent.rllib.train \
     --difficulty easy \
     --num-env-runners 8 \
     --num-gpus-per-learner 1
 
 # Multi-GPU: 2 learner workers each with 1 GPU, 16 CPU rollout workers
-python -m balatro_gym.rllib.train \
+python -m agent.rllib.train \
     --difficulty medium \
     --num-env-runners 16 \
     --num-learners 2 \
     --num-gpus-per-learner 1
 
 # Vectorized envs on each runner (faster sampling)
-python -m balatro_gym.rllib.train \
+python -m agent.rllib.train \
     --difficulty easy \
     --num-env-runners 8 \
     --num-envs-per-env-runner 4
 
 # Custom hyperparameters and architecture
-python -m balatro_gym.rllib.train \
+python -m agent.rllib.train \
     --difficulty easy \
     --lr 1e-4 \
     --gamma 0.995 \
@@ -492,7 +492,7 @@ from ray.tune.registry import register_env
 from ray.rllib.algorithms.ppo import PPOConfig
 from ray.rllib.core.rl_module.rl_module import RLModuleSpec
 
-from balatro_gym.rllib import (
+from agent.rllib import (
     make_balatro_env,
     ActionMaskingTorchRLModule,
 )
@@ -552,7 +552,7 @@ ray.shutdown()
 
 ```bash
 # Evaluate a checkpoint over 100 episodes
-python -m balatro_gym.rllib.evaluate \
+python -m agent.rllib.evaluate \
     --checkpoint checkpoints/balatro_ppo/checkpoint_000200 \
     --num-episodes 100 \
     --difficulty easy \
@@ -565,7 +565,7 @@ Train on easy first, then restore the checkpoint for harder difficulties:
 
 ```bash
 # Phase 1: Easy (200 iterations)
-python -m balatro_gym.rllib.train \
+python -m agent.rllib.train \
     --difficulty easy \
     --num-iterations 200 \
     --checkpoint-dir checkpoints/phase1
@@ -1083,7 +1083,7 @@ c_trance, c_medium, c_aura, c_cryptid, c_immolate
 
 1. **Start with Easy.** The easy preset has only 4 antes, more hands/discards, and a free starter joker. This makes it feasible for agents to win during early training.
 
-2. **Use action masking.** The action space is large (446) but most actions are invalid at any given state. The `ActionMaskingTorchRLModule` in `balatro_gym.rllib` handles this natively with RLlib PPO.
+2. **Use action masking.** The action space is large (446) but most actions are invalid at any given state. The `ActionMaskingTorchRLModule` in `agent.rllib` handles this natively with RLlib PPO.
 
 3. **Observation varies by config.** The observation dimension changes with the joker/consumable pool size. If you plan curriculum training across difficulties, consider using a fixed pool size for all stages.
 
