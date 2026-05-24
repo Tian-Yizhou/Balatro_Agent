@@ -13,6 +13,10 @@ class RandomAgent:
     def __init__(self, seed: int | None = None):
         self.rng = np.random.default_rng(seed)
 
+    def reset(self) -> None:
+        """Reset internal state (no-op for random agent)."""
+        pass
+
     def act(self, obs: np.ndarray, info: dict) -> int:
         mask = info["action_mask"]
         valid = np.where(mask)[0]

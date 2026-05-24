@@ -16,7 +16,12 @@ from typing import Dict, Optional, Tuple, Union
 
 import gymnasium as gym
 
-from ray.rllib.algorithms.ppo.torch.ppo_torch_rl_module import PPOTorchRLModule
+try:
+    from ray.rllib.algorithms.ppo.torch.default_ppo_torch_rl_module import (
+        DefaultPPOTorchRLModule as PPOTorchRLModule,
+    )
+except ImportError:
+    from ray.rllib.algorithms.ppo.torch.ppo_torch_rl_module import PPOTorchRLModule
 from ray.rllib.core.columns import Columns
 from ray.rllib.core.rl_module.apis.value_function_api import ValueFunctionAPI
 from ray.rllib.core.rl_module.default_model_config import DefaultModelConfig

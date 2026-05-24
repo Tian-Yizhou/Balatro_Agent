@@ -35,12 +35,33 @@ class HeuristicAgent:
     the lowest-value cards not part of any pair/triple.
     """
 
-    def __init__(self, seed: int | None = None):
-        self.rng = np.random.default_rng(seed)
+    def __init__(self, env=None, seed: int | None = None):
+        """Initialize heuristic agent.
 
-    def act(self, obs: np.ndarray, info: dict, env) -> int:
+        Args:
+            env: A BalatroEnv instance (needed to access game state for
+                hand evaluation). Can be set later via ``set_env()``.
+            seed: Random seed for tie-breaking.
+        """
+        self.rng = np.random.default_rng(seed)
+        self._env = env
+
+    def set_env(self, env) -> None:
+        """Set the environment reference (needed for hand evaluation)."""
+        self._env = env
+
+    def reset(self) -> None:
+        """Reset internal state (no-op for heuristic agent)."""
+        pass
+
+    def act(self, obs: np.ndarray, info: dict) -> int:
+        """Choose an action using heuristic rules.
+
+        Requires that ``self._env`` is set to a BalatroEnv instance.
+        """
         mask = info["action_mask"]
         phase = info["phase"]
+        env = self._env
 
         if phase == "play":
             return self._play_action(mask, env)
@@ -175,12 +196,13 @@ class HeuristicAgent:
 
     def run_episode(self, env) -> dict:
         """Run a full episode and return stats."""
+        self._env = env
         obs, info = env.reset()
         total_reward = 0.0
         steps = 0
 
         while True:
-            action = self.act(obs, info, env)
+            action = self.act(obs, info)
             obs, reward, terminated, truncated, info = env.step(action)
             total_reward += reward
             steps += 1
