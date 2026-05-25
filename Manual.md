@@ -8,8 +8,10 @@ A Gymnasium-compatible card game environment inspired by Balatro (a roguelite de
 
 Two independent packages in one repo:
 - **`balatro_gym`** — Environment package (gymnasium + numpy + pyyaml only). Installable via `pip install -e .`
-- **`agent`** — Training/baselines package (depends on balatro_gym + Ray + Torch)
-- **Tests**: 382 tests across 13 files, run with `pytest tests/`
+- **`agent`** — Training/baselines/LLM agent package (depends on balatro_gym + Ray + Torch)
+- **Tests**: 383 tests across 13 files, run with `pytest tests/`
+
+Setup: `conda env create -f environment.yml && conda activate balatro-agent` (or `pip install -e ".[all]"`)
 
 ## Directory Layout
 
@@ -23,9 +25,11 @@ Balatro-Agent/
 │   ├── rendering/            # (placeholder — not yet implemented)
 │   └── utils/                # (placeholder — not yet implemented)
 ├── agent/                    # AGENT PACKAGE (depends on balatro_gym + Ray + Torch)
-│   ├── __init__.py
+│   ├── __init__.py           # Exports Agent, run_episode, evaluate_agent
+│   ├── base.py               # Agent Protocol + evaluation helpers
 │   ├── baselines/            # Baseline agents (random, heuristic)
-│   └── rllib/                # Ray RLlib integration (training, evaluation)
+│   ├── rllib/                # Ray RLlib integration (training, evaluation, callbacks)
+│   └── llm/                  # LLM agent infrastructure (renderer, backends)
 ├── configs/                  # YAML configuration files
 │   ├── defaults.yaml         # Full default config (medium preset, all fields)
 │   └── example_custom.yaml   # Example: override a few fields from easy preset
@@ -36,11 +40,12 @@ Balatro-Agent/
 │   ├── PLAN.md                   # Original implementation plan (historical)
 │   └── Tech_Log.md               # Technical decisions log
 ├── experiments/              # (placeholder for training experiment scripts)
+├── environment.yml           # Conda env: balatro-agent (full project)
 ├── CLAUDE.md                 # Project context for Claude Code
 ├── Manual.md                 # This file
 ├── README.md                 # Public project README
-├── setup.py                  # Package installation (extras: recording, agent, all)
-└── requirements.txt          # Direct dependencies
+├── setup.py                  # Package installation (extras: recording, agent, dev, all)
+└── requirements.txt          # Legacy pip deps (prefer conda YAMLs)
 ```
 
 ### Package Dependency
@@ -315,8 +320,70 @@ Key CLI flags:
 ### `evaluate.py` (236 lines)
 CLI evaluation script. Run with `python -m agent.rllib.evaluate`. Loads checkpoint, runs episodes, prints aggregate stats.
 
+### `callbacks.py`
+`BalatroMetricsCallback` — RLlib callback that extracts game-specific metrics per episode:
+- `game_won`, `blinds_beaten`, `ante_reached`, `final_money`, `final_score`, `episode_length`
+- Computes aggregate `win_rate` for training monitoring
+
 ### `rllib/__init__.py` (14 lines)
 Exports: `BalatroRLlibEnv`, `make_balatro_env`, `ActionMaskingTorchRLModule`, `build_config`.
+
+---
+
+## Agent Protocol (`agent/base.py`)
+
+Defines a common interface all agents must satisfy:
+
+```python
+class Agent(Protocol):
+    def act(self, obs: np.ndarray, info: dict) -> int: ...
+    def reset(self) -> None: ...
+```
+
+Helper functions:
+- `run_episode(env, agent, seed=None, max_steps=10000)` → dict with episode stats
+- `evaluate_agent(env, agent, num_episodes=100, seed=None, verbose=False)` → aggregate stats dict
+
+---
+
+## LLM Agent Infrastructure (`agent/llm/`)
+
+### `renderer.py`
+`GameStateRenderer(env)` — converts environment internal state to structured JSON.
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `render(info)` | dict | Full game state as JSON-serializable dict |
+| `render_json(info, indent=2)` | str | Formatted JSON string for LLM prompts |
+
+JSON sections: `game_progress`, `hand`, `jokers`, `consumables`, `economy`, `hand_levels`, `valid_actions`, `shop` (if in shop phase).
+
+Each valid action includes: `action_id`, `type` (play/discard/buy/sell/reroll/skip), `card_indices`, and human-readable card names.
+
+### `backends.py`
+`ModelBackend` Protocol: `generate(prompt: str, **kwargs) -> str`
+
+Planned implementations (currently commented-out stubs):
+- `HuggingFaceBackend(model_path)` — local inference via transformers
+- `OpenAIBackend(model, api_key)` — OpenAI-compatible API
+- `AnthropicBackend(model, api_key)` — Claude API
+
+---
+
+## Reward System (`balatro_gym/envs/rewards.py`)
+
+Pluggable reward functions via Protocol pattern:
+
+| Export | Type | Description |
+|--------|------|-------------|
+| `RewardContext` | frozen dataclass | All state needed for reward computation |
+| `RewardFunction` | Protocol | `__call__(ctx: RewardContext) -> float` |
+| `DefaultReward` | class | Shaped reward (progress credit, blind bonus, win/lose) |
+| `SparseReward` | class | Only +1 (win) / -1 (lose), no shaping |
+
+`DefaultReward` tunable parameters: `invalid_action_penalty`, `score_progress_scale`, `blind_beaten_bonus`, `win_reward`, `lose_penalty`.
+
+Usage: `balatro_gym.make("easy", reward_fn=SparseReward())`
 
 ---
 
@@ -444,11 +511,17 @@ When looking for specific functionality:
 | See observation encoding | `balatro_gym/envs/balatro_env.py` (_encode_observation, _compute_obs_dim) |
 | See action masking logic | `balatro_gym/envs/balatro_env.py` (action_masks) |
 | See difficulty presets | `balatro_gym/envs/configs.py` (GameConfig.easy/medium/hard) |
+| See reward functions | `balatro_gym/envs/rewards.py` (DefaultReward, SparseReward) |
 | Configure via YAML | `configs/defaults.yaml`, `configs/example_custom.yaml` |
+| See Agent interface | `agent/base.py` (Agent Protocol, run_episode, evaluate_agent) |
 | See training CLI args | `agent/rllib/train.py` (parse_args) |
 | See how action masking works in RLlib | `agent/rllib/action_mask_model.py` |
+| See training metrics | `agent/rllib/callbacks.py` (BalatroMetricsCallback) |
 | See baseline agents | `agent/baselines/` (random_agent.py, heuristic_agent.py) |
+| See LLM game state renderer | `agent/llm/renderer.py` (GameStateRenderer) |
+| See LLM backend interface | `agent/llm/backends.py` (ModelBackend Protocol) |
 | See trajectory recording | `balatro_gym/wrappers/rollout_recorder.py` |
 | See episode statistics | `balatro_gym/wrappers/episode_stats_recorder.py` |
 | See state serialization | `balatro_gym/core/game_state.py` (serialize/deserialize) |
 | See seed ID format | `balatro_gym/core/seed_id.py` |
+| Set up the project | `environment.yml` (conda) or `setup.py` (pip) |

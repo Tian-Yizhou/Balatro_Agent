@@ -23,24 +23,24 @@ A Gymnasium-compatible environment for the Balatro card game, designed for reinf
 ## Installation
 
 ```bash
-# Clone and install in development mode
+# Clone the repository
 git clone <repo-url>
 cd Balatro-Agent
-pip install -e .
 
-# Dependencies
-pip install gymnasium numpy
+# Option A: Conda (recommended)
+# Full project (environment + agent training)
+conda env create -f environment.yml
+conda activate balatro-agent
 
-# For RL training with Ray RLlib
-pip install -e ".[rllib]"
-# or manually:
-pip install "ray[rllib]" torch
+# Environment only (for users who only need balatro_gym)
+conda env create -f ./balatro_gym/environment_gym.yml
+conda activate balatro-gym
 
-# For recording wrappers (trajectory + stats)
-pip install -e ".[recording]"
-
-# Everything at once
-pip install -e ".[all]"
+# Option B: pip
+pip install -e .                  # Environment only
+pip install -e ".[agent]"        # + Ray RLlib and Torch
+pip install -e ".[recording]"    # + PyArrow for recording
+pip install -e ".[all]"          # Everything at once
 ```
 
 After installation, the following Gymnasium environment IDs are available:
