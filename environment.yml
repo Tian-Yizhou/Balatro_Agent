@@ -1,0 +1,17 @@
+name: balatro-agent
+channels:
+  - defaults
+  - conda-forge
+  - pytorch
+dependencies:
+  - python=3.10
+  - numpy>=1.24
+  - pyyaml>=6.0
+  - pytorch>=2.0
+  - pip
+  - pip:
+      - gymnasium>=0.29.0
+      - "ray[rllib]>=2.10.0"
+      - pyarrow>=12.0
+      - pytest>=7.0.0
+      - -e .

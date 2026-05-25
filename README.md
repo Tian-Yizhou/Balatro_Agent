@@ -43,8 +43,25 @@ Consider a state where your current hand cannot satisfy the score requirement, a
 
 ## Quick Start
 
+### Setup (conda)
+
 ```bash
-# Install
+# Option 1: Full project (environment + agent training)
+conda env create -f environment.yml
+conda activate balatro-agent
+
+# Option 2: Environment only (for users who only need balatro_gym)
+conda env create -f ./balatro_gym/environment_gym.yml
+conda activate balatro-gym
+```
+
+### Setup (pip)
+
+```bash
+# Environment only
+pip install -e .
+
+# Full project (environment + agent training)
 pip install -e ".[all]"
 ```
 
