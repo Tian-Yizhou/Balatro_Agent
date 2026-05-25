@@ -1,495 +1,334 @@
-# Balatro-Agent Implementation Plan
+# Balatro-Agent: Project Design Map
 
-> **Status (2026-04-21)**: This is the original implementation plan. The core engine, Gymnasium environment, recording wrappers, seed system, and RLlib integration are all complete (383 tests passing). Training framework was migrated from Stable Baselines3 to Ray RLlib. Remaining work: running training experiments and evaluation.
+## 1. Vision
 
-## Context
+A Gymnasium-compatible reasoning gym for strategic decision-making research, paired with multiple agent paradigms (RL, LLM, hybrid) that serve as reference implementations and baselines. The environment tests agents on: probability estimation, expected value calculation, combinatorial optimization, resource management, and long-horizon planning under uncertainty.
 
-Building a Gymnasium-compatible card game environment inspired by Balatro for COMP_SCI 496 (Agent AI, Northwestern). Two deliverables: (1) a reasoning gym environment, (2) an RL-trained agent using PPO to play the game with structured (numerical) observations.
-
-**Approach**: Reference-guided clean-room. Read the Balatro Lua source to understand exact formulas, scoring rules, and joker effects, then implement from scratch in Python with original code structure. The Lua source is never committed to the repo.
-
-**Timeline**: Proposal presentation Apr 20 (slides only) | Final presentation Jun 1 | Report due Jun 8
+Analogous to how Atari provides arcade-game benchmarks for vision-based RL, and Voyager provides open-ended exploration benchmarks for LLM agents — Balatro-Gym provides a **deck-building strategy benchmark** that requires both mathematical reasoning and multi-step planning.
 
 ---
 
-## Architecture
+## 2. Environment Design
+
+### 2.1 Core Game Engine (`balatro_gym/core/`)
+
+A framework-independent game engine implementing Balatro's mechanics:
+
+| Module | Responsibility |
+|--------|---------------|
+| `card.py` | Card/Deck primitives, 8 enhancements, 3 editions, 4 seals |
+| `hand_evaluator.py` | 12 poker hand types, base scoring |
+| `hand_levels.py` | Mutable hand-type levels (Planet card upgrades) |
+| `joker.py` | 30 jokers via registry pattern, 8 scoring hooks per joker |
+| `consumable.py` | 40 consumables (22 Tarots, 12 Planets, 6 Spectrals) |
+| `blind.py` | Blind progression, 9 boss blind debuff effects |
+| `shop.py` | Shop offering generation, buy/sell/reroll |
+| `game_state.py` | Full lifecycle + 10-step scoring pipeline |
+| `seed_id.py` | Reproducible episode seeds (YYYYMMDD-HHMM-XXXXXXXX) |
+
+**Status**: Complete. 383 tests passing.
+
+### 2.2 Gymnasium Interface (`balatro_gym/envs/`)
+
+| Component | Specification |
+|-----------|--------------|
+| Observation | Flat float32 vector (Easy=756, Medium=868, Hard=950 dims) |
+| Action Space | Discrete(446) with boolean action mask |
+| Actions 0-217 | Play card subsets (all C(8,1..5) = 218 combinations) |
+| Actions 218-435 | Discard card subsets (same 218 combinations) |
+| Actions 436-438 | Buy shop slots 0-2 |
+| Actions 439-443 | Sell joker slots 0-4 |
+| Action 444 | Reroll shop |
+| Action 445 | Skip shop |
+| Registered IDs | `Balatro-v0`, `Balatro-Easy-v0`, `Balatro-Medium-v0`, `Balatro-Hard-v0` |
+
+**Factory API** (MineDojo-style):
+```python
+env = balatro_gym.make("easy", seed=42, reward_fn=DefaultReward())
+vec_env = balatro_gym.make_vec("easy", num_envs=8)
+```
+
+**Status**: Complete.
+
+### 2.3 Pluggable Reward System (`balatro_gym/envs/rewards.py`)
+
+| Reward Function | Design |
+|----------------|--------|
+| `DefaultReward` | Shaped: blind_beaten bonus (+1 scaled by progress), score progress credit, win (+10), lose (-1), invalid action penalty (-0.01) |
+| `SparseReward` | Terminal only: win (+1), lose (-1) |
+| Custom | Any callable satisfying `RewardFunction` Protocol (`RewardContext -> float`) |
+
+`RewardContext` is a frozen dataclass exposing: `game_won`, `game_over`, `blind_beaten`, `score_progress`, `invalid_action`, `blinds_beaten`, `total_blinds`.
+
+**Status**: Complete.
+
+### 2.4 Difficulty Configuration (`balatro_gym/envs/configs.py`)
+
+| Parameter | Easy | Medium | Hard |
+|-----------|------|--------|------|
+| Antes | 4 | 6 | 8 |
+| Hands/round | 5 | 4 | 4 |
+| Discards/round | 4 | 3 | 3 |
+| Starting money | $6 | $4 | $4 |
+| Joker pool | 10 | 20 | 30 |
+| Consumable pool | Planets + simple Tarots | + all Tarots + simple Spectrals | All 40 |
+
+Custom configs via YAML merge-over-defaults:
+```yaml
+base: easy
+num_antes: 5
+starting_money: 8
+```
+
+**Status**: Complete.
+
+### 2.5 Recording Infrastructure (`balatro_gym/wrappers/`)
+
+| Wrapper | Output | Contents |
+|---------|--------|----------|
+| `RolloutRecorder` | `.npz` per episode | obs, actions, rewards, terminated, truncated, phases, antes, scores, money, [action_masks] |
+| `EpisodeStatsRecorder` | Parquet (streaming append) | 23 columns: won, blinds_beaten, total_steps, reward, scores, action counts, etc. |
+
+**Status**: Complete.
+
+---
+
+## 3. Agent Paradigms
+
+### 3.1 Baseline Agents (`agent/baselines/`)
+
+| Agent | Strategy | Purpose |
+|-------|----------|---------|
+| `RandomAgent` | Uniform sample from valid actions | Lower bound |
+| `HeuristicAgent` | Greedy: play highest-scoring hand, discard weak unpaired cards, buy cheapest joker | Upper bound for non-learned play |
+
+All agents satisfy the `Agent` Protocol: `act(obs, info) -> int`, `reset() -> None`.
+
+**Verified baselines (easy mode)**:
+- Random: ~1.4 blinds beaten, 0% win rate
+- Heuristic: ~9.3 blinds beaten, high win rate
+
+**Status**: Complete.
+
+### 3.2 RL Agent — PPO with Action Masking (`agent/rllib/`)
+
+**Architecture**:
+- Framework: Ray RLlib (new API stack)
+- Algorithm: PPO with `ActionMaskingTorchRLModule`
+- Policy network: MLP (configurable hidden layers, default [256, 256])
+- Observation: Dict(`observations`: flat vector, `action_mask`: bool[446])
+- Training: distributed env_runners for rollout collection, GPU learner
+
+**Training CLI**:
+```bash
+python -m agent.rllib.train \
+    --difficulty easy \
+    --num-env-runners 4 \
+    --num-gpus-per-learner 1 \
+    --num-iterations 200 \
+    --fcnet-hiddens 256 256
+```
+
+**Metrics** (`BalatroMetricsCallback`): win_rate, blinds_beaten, ante_reached, final_money, episode_length.
+
+**Status**: Infrastructure complete. Training runs needed.
+
+### 3.3 LLM Agent (`agent/llm/`)
+
+**Architecture**:
+- Input: Full game state rendered as structured JSON via `GameStateRenderer`
+- Model: Any model satisfying `ModelBackend` Protocol (`generate(prompt) -> str`)
+- Output: Parsed `action_id` from model response
+
+**Game State Renderer** produces JSON with sections:
+- `game_progress` — phase, ante, blind, score target, hands/discards remaining
+- `hand` — cards with rank, suit, chip_value, enhancements, editions, seals
+- `jokers` — owned jokers with descriptions
+- `consumables` — owned consumables with descriptions
+- `economy` — money, deck size
+- `hand_levels` — current level/chips/mult for all 12 hand types
+- `valid_actions` — enumerated with type, card_indices, human-readable descriptions
+- `shop` — offerings with cost, name, description (if in shop phase)
+
+**Planned backends**:
+| Backend | Model | Use Case |
+|---------|-------|----------|
+| `HuggingFaceBackend` | Qwen2.5-3B/7B-Instruct | Local inference, fine-tunable |
+| `OpenAIBackend` | GPT-4o | API-based, strong zero-shot |
+| `AnthropicBackend` | Claude | API-based, strong reasoning |
+
+**Status**: Renderer complete, backends are Protocol stubs (TODO: implement).
+
+### 3.4 Hybrid Agent (Future)
+
+Combine RL policy with LLM reasoning:
+- LLM provides high-level strategy (which hand type to aim for, when to save money)
+- RL policy executes low-level card selection within that strategy
+- Or: LLM acts as a reward model / critic for RL training
+
+**Status**: Not started. Future extension.
+
+---
+
+## 4. Experiment Design
+
+### 4.1 PPO Training Experiments
+
+| Experiment | Variable | Control | Metric |
+|-----------|----------|---------|--------|
+| E1: Basic PPO | Train PPO on easy, 200 iter | — | Win rate, learning curve |
+| E2: Reward ablation | DefaultReward vs SparseReward | Same architecture, same seed | Learning speed, final win rate |
+| E3: Curriculum | Easy→Medium vs Medium-only | Same total timesteps | Win rate on medium |
+| E4: Architecture | [256,256] vs [512,256] vs [128,128,128] | Same difficulty, reward | Final performance |
+| E5: Difficulty scaling | Train on easy / medium / hard | Same architecture | Win rate per difficulty |
+
+### 4.2 LLM Agent Experiments
+
+| Experiment | Variable | Metric |
+|-----------|----------|--------|
+| L1: Zero-shot | Qwen-3B / Qwen-7B on easy | Win rate, blinds beaten, action quality |
+| L2: Prompt engineering | Minimal prompt vs strategy-augmented prompt | Win rate delta |
+| L3: Few-shot | Include 3 expert trajectory snippets in prompt | Win rate vs zero-shot |
+| L4: Fine-tuning (SFT) | Fine-tune on heuristic agent trajectories | Win rate before/after |
+
+### 4.3 Cross-Paradigm Comparison
+
+| Agent | Easy | Medium | Hard |
+|-------|------|--------|------|
+| Random | baseline | baseline | baseline |
+| Heuristic | baseline | baseline | baseline |
+| PPO (shaped) | E1 | E5 | E5 |
+| PPO (curriculum) | — | E3 | — |
+| LLM (zero-shot) | L1 | — | — |
+| LLM (fine-tuned) | L4 | — | — |
+
+---
+
+## 5. Evaluation Protocol
+
+### 5.1 Metrics
+
+| Metric | Definition | Granularity |
+|--------|-----------|-------------|
+| Win rate | % of episodes where agent wins | Per 100 episodes |
+| Blinds beaten | Mean blinds beaten per episode | Per episode |
+| Ante reached | Mean maximum ante reached | Per episode |
+| Survival curve | P(agent beats blind N) for each N | Per blind index |
+| Score efficiency | Mean(score / target) per blind | Per blind |
+| Episode length | Mean steps per episode | Per episode |
+| Action distribution | % play / discard / buy / sell / reroll / skip | Per episode |
+
+### 5.2 Evaluation Procedure
+
+1. Fix 100 evaluation seeds (shared across all agents for fair comparison)
+2. Run each agent on all 100 seeds per difficulty level
+3. Report mean ± std for all metrics
+4. Use `evaluate_agent()` from `agent/base.py` for consistent execution
+
+### 5.3 Recording
+
+All evaluation runs are recorded via `EpisodeStatsRecorder` to Parquet files for post-hoc analysis. Training runs save per-iteration metrics to `metrics.json`.
+
+---
+
+## 6. Implementation Roadmap
+
+### Phase A: RL Training (Current Priority)
+
+```
+A1. Run PPO on easy mode (200 iterations, DefaultReward)
+    → Verify learning signal exists (reward curve trends upward)
+    
+A2. Run PPO on easy mode (200 iterations, SparseReward)
+    → Compare learning speed with A1
+
+A3. Run curriculum: easy (100 iter) → medium (100 iter)
+    → Compare medium-mode performance vs training on medium directly
+
+A4. Run architecture variants on easy mode
+    → Identify best architecture for downstream experiments
+
+A5. Evaluate best PPO checkpoint on all difficulties
+    → Produce cross-difficulty comparison table
+```
+
+### Phase B: LLM Agent
+
+```
+B1. Implement HuggingFaceBackend
+    → Load Qwen2.5-3B-Instruct, wrap generate() with prompt template
+
+B2. Design system prompt
+    → Game rules summary + valid action format specification
+
+B3. Run LLM zero-shot on easy (50 episodes)
+    → Measure baseline LLM performance
+
+B4. Iterate on prompt (strategy hints, few-shot examples)
+    → Measure improvement from prompt engineering
+
+B5. (Optional) Generate expert trajectories with HeuristicAgent
+    → SFT fine-tune Qwen on (state_json, action) pairs
+    → Evaluate fine-tuned model
+```
+
+### Phase C: Evaluation & Analysis
+
+```
+C1. Run all agents on standardized 100-seed evaluation set
+    → Easy, medium, hard
+
+C2. Generate comparison tables and figures
+    → Win rate, survival curves, learning curves
+
+C3. Analyze failure modes
+    → Where does each agent type fail? (which blind, which decisions)
+
+C4. Record full trajectory dataset
+    → For future research (imitation learning, offline RL)
+```
+
+---
+
+## 7. Compute Plan
+
+| Task | Hardware | Time |
+|------|----------|------|
+| PPO experiments (5 runs × ~200 iter) | 1× GPU + 4-8 CPU workers | ~10h total |
+| LLM inference (Qwen-3B, 50 episodes) | 1× GPU | ~1-2h |
+| LLM fine-tuning (optional, SFT) | 1× GPU | ~2-4h |
+| Evaluation runs (all agents × 3 difficulties) | CPU | <1h |
+| Trajectory recording | CPU | <1h |
+| **Total** | 2× H100/A100 available | **~15-20h** |
+
+---
+
+## 8. Project Structure
 
 ```
 Balatro-Agent/
-├── balatro_gym/
-│   ├── __init__.py
-│   ├── core/
-│   │   ├── __init__.py
-│   │   ├── card.py                 # Card, Deck classes
-│   │   ├── hand_evaluator.py       # Poker hand detection + base scoring
-│   │   ├── joker.py                # Joker registry, base class, all joker definitions
-│   │   ├── blind.py                # Blind progression, boss blind effects
-│   │   ├── shop.py                 # Shop: offerings, buying, selling, rerolling
-│   │   └── game_state.py           # Full game state manager + scoring pipeline
-│   ├── envs/
-│   │   ├── __init__.py             # Gymnasium registration
-│   │   ├── balatro_env.py          # Main Gymnasium environment
-│   │   └── configs.py              # GameConfig dataclass + difficulty presets
-│   ├── agents/
-│   │   ├── __init__.py
-│   │   ├── random_agent.py         # Baseline: random valid actions
-│   │   └── heuristic_agent.py      # Baseline: greedy best-hand strategy
-│   ├── rendering/
-│   │   ├── __init__.py
-│   │   └── text_renderer.py        # Human-readable game state (for debugging)
-│   └── utils/
-│       ├── __init__.py
-│       └── metrics.py              # Win rate, avg score, tracking
-├── experiments/
-│   ├── train_ppo.py                # PPO training script
-│   ├── run_baselines.py            # Run random/heuristic baselines
-│   └── evaluation.py               # Evaluation + comparison suite
-├── configs/
-│   ├── easy.yaml
-│   ├── medium.yaml
-│   └── hard.yaml
-├── tests/
-│   ├── test_card.py
-│   ├── test_hand_evaluator.py
-│   ├── test_joker.py
-│   ├── test_blind.py
-│   ├── test_shop.py
-│   ├── test_game_state.py
-│   └── test_env.py
-├── setup.py
-├── requirements.txt
-└── README.md
+├── balatro_gym/                  # Environment package (standalone, no RL deps)
+│   ├── core/                    # Game engine
+│   ├── envs/                    # Gymnasium interface + rewards + configs
+│   ├── wrappers/                # Recording (trajectories, statistics)
+│   └── environment_gym.yml      # Conda env for env-only users
+├── agent/                        # Agent package (depends on balatro_gym)
+│   ├── base.py                  # Agent Protocol + evaluation helpers
+│   ├── baselines/               # Random, Heuristic
+│   ├── rllib/                   # PPO training (Ray RLlib + action masking)
+│   └── llm/                     # LLM agent (renderer + backends)
+├── configs/                      # YAML game configurations
+├── experiments/                  # Experiment scripts (TODO)
+├── tests/                        # 383 unit tests
+├── docs/                         # Documentation
+└── environment.yml               # Conda env for full project
 ```
 
----
-
-## Phase 1: Core Game Engine (DONE)
-
-All core modules are implemented. See `docs/Tech_Log.md` for code details.
-
-| Module | File | Status |
-|--------|------|--------|
-| Card, Deck | `balatro_gym/core/card.py` | Done |
-| Hand evaluator | `balatro_gym/core/hand_evaluator.py` | Done |
-| Joker registry + 30 jokers | `balatro_gym/core/joker.py` | Done |
-| Blinds + boss effects | `balatro_gym/core/blind.py` | Done |
-| Shop | `balatro_gym/core/shop.py` | Done |
-| Game state manager | `balatro_gym/core/game_state.py` | Done |
-
----
-
-## Phase 2: Gymnasium Environment
-
-### Step 1 — `balatro_gym/envs/configs.py`
-
-GameConfig dataclass holding all game parameters. Provides `easy()`, `medium()`, `hard()` presets and `from_file()` for YAML loading. Validates joker IDs against the registry.
-
-```python
-@dataclass
-class GameConfig:
-    num_antes: int = 8
-    hands_per_round: int = 4
-    discards_per_round: int = 3
-    hand_size: int = 8
-    max_jokers: int = 5
-    starting_money: int = 4
-    shop_slots: int = 2
-    reroll_base_cost: int = 5
-    reward_mode: str = "shaped"
-    available_joker_ids: list[str] = field(default_factory=list)
-    starting_joker_ids: list[str] = field(default_factory=list)
+**Dependency graph**:
 ```
-
-### Step 2 — `balatro_gym/envs/balatro_env.py`
-
-The Gymnasium wrapper. This is the most complex new code because it must encode the game state and action space for a neural network.
-
-#### Observation Space
-
-A flat `Box` vector that a standard MLP policy can consume. All values normalized to roughly [0, 1] or [-1, 1].
-
+balatro_gym (gymnasium, numpy, pyyaml)
+    ↑
+agent.baselines (no extra deps)
+agent.rllib (ray[rllib], torch)
+agent.llm (transformers / openai / anthropic)
 ```
-Observation vector layout (total ~240 dimensions):
-
-1. Hand cards: 52-dim binary vector (1 = card is in hand)
-   - Index = suit * 13 + (rank - 2)
-   - Example: K♠ = 3*13 + 11 = index 50
-
-2. Hand card face-down flags: 52-dim binary (1 = face-down, applies to boss debuffs)
-
-3. Joker slots: 5 slots × (num_joker_types + 1) one-hot
-   - With 30 joker types: 5 × 31 = 155 dims
-   - Slot is all-zeros if empty, one-hot for joker type otherwise
-   - ORDER IS PRESERVED (slot 0 = leftmost joker, matters for scoring)
-
-4. Game scalars (normalized):
-   - money / 100                    (float, rough max ~$100)
-   - ante / num_antes               (float, 0 to 1)
-   - blind_type: 3-dim one-hot      (small, big, boss)
-   - score_target (log-normalized):  log(score_target) / log(100000)
-   - current_score / score_target    (float, 0 to ~2)
-   - hands_remaining / hands_per_round
-   - discards_remaining / discards_per_round
-   - deck_size / 52
-
-5. Phase: 2-dim one-hot (play, shop)
-
-6. Shop offerings (during shop phase, zeros during play):
-   - 2 slots × (num_joker_types + 1) one-hot + cost_normalized + sold_flag
-   - 2 × (31 + 1 + 1) = 66 dims
-```
-
-Implementation:
-
-```python
-self.observation_space = gymnasium.spaces.Box(
-    low=0.0, high=1.0,
-    shape=(obs_dim,),
-    dtype=np.float32,
-)
-```
-
-The `_get_obs()` method builds this flat vector from `game_state.get_view()`.
-
-#### Action Space
-
-A single `Discrete` space enumerating ALL possible actions across both phases. Invalid actions are masked.
-
-**Action enumeration:**
-
-```
-PLAY PHASE:
-  Actions 0 to 217:    Play a subset of cards (all C(8,1)+C(8,2)+C(8,3)+C(8,4)+C(8,5) = 218 subsets)
-  Actions 218 to 435:  Discard a subset of cards (same 218 subsets, offset by 218)
-
-SHOP PHASE:
-  Action 436: Buy shop slot 0
-  Action 437: Buy shop slot 1
-  Actions 438-442: Sell joker from slot 0-4
-  Action 443: Reroll shop
-  Action 444: Skip (leave shop, go to next blind)
-
-TOTAL: 445 discrete actions
-```
-
-Pre-compute the card subset mapping at init time:
-
-```python
-# Build lookup: action_index -> list of card indices
-from itertools import combinations
-
-self._card_subsets: list[tuple[int, ...]] = []
-for size in range(1, 6):          # 1 to 5 cards
-    for combo in combinations(range(8), size):
-        self._card_subsets.append(combo)
-# len(self._card_subsets) == 218
-
-self.action_space = gymnasium.spaces.Discrete(445)
-```
-
-**Action mask function** — returns a boolean array of length 445:
-
-```python
-def action_masks(self) -> np.ndarray:
-    """Return valid action mask for current state. Required by MaskablePPO."""
-    mask = np.zeros(445, dtype=bool)
-
-    if self.game.phase == GamePhase.PLAY:
-        if self.game.hands_remaining > 0:
-            # All play subsets valid (actions 0-217) as long as we have enough cards
-            for i, subset in enumerate(self._card_subsets):
-                if max(subset) < len(self.game.hand):
-                    mask[i] = True
-
-        if self.game.discards_remaining > 0:
-            # All discard subsets valid (actions 218-435)
-            for i, subset in enumerate(self._card_subsets):
-                if max(subset) < len(self.game.hand):
-                    mask[218 + i] = True
-
-    elif self.game.phase == GamePhase.SHOP:
-        # Buy actions (436-437): valid if can afford and have joker slots
-        for slot_idx, offering in enumerate(self.game.shop.offerings):
-            if (not offering.sold
-                and self.game.money >= offering.cost
-                and len(self.game.jokers) < self.game.max_jokers):
-                mask[436 + slot_idx] = True
-
-        # Sell actions (438-442): valid if joker exists in that slot
-        for j_idx in range(len(self.game.jokers)):
-            mask[438 + j_idx] = True
-
-        # Reroll (443): valid if can afford
-        if self.game.money >= self.game.shop.reroll_cost:
-            mask[443] = True
-
-        # Skip (444): always valid in shop
-        mask[444] = True
-
-    return mask
-```
-
-#### Reward Function
-
-```python
-def _compute_reward(self) -> float:
-    if self.game.phase == GamePhase.GAME_WON:
-        return 10.0
-    elif self.game.phase == GamePhase.GAME_OVER:
-        return -1.0
-    elif blind_just_beaten:
-        # Shaped: reward proportional to progress
-        progress = self.game.blinds_beaten / self.game.blind_manager.total_blinds
-        efficiency = hands_saved / self.game.hands_per_round
-        return 1.0 + progress + 0.5 * efficiency
-    else:
-        # Mid-blind: small reward for scoring (encourages learning to score)
-        score_ratio = min(1.0, self.game.current_score / self.game.score_target)
-        return 0.01 * score_ratio
-```
-
-Design rationale:
-- **Win (+10)**: Large positive signal for completing the game
-- **Lose (-1)**: Negative but not too punishing (we want the agent to explore, not become overly conservative)
-- **Blind beaten (+1 to +2.5)**: Scaled by how far through the game the agent is. Beating late blinds is worth more.
-- **Mid-step (0 to 0.01)**: Tiny reward for making score progress. Prevents the agent from learning to just skip/do nothing.
-
-#### Step function dispatch
-
-```python
-def step(self, action: int):
-    prev_score = self.game.current_score
-    prev_blinds = self.game.blinds_beaten
-    reward = 0.0
-
-    if self.game.phase == GamePhase.PLAY:
-        if action < 218:
-            # Play cards
-            card_indices = list(self._card_subsets[action])
-            self.game.play_hand(card_indices)
-        elif action < 436:
-            # Discard cards
-            card_indices = list(self._card_subsets[action - 218])
-            self.game.discard(card_indices)
-
-    elif self.game.phase == GamePhase.SHOP:
-        if action == 436 or action == 437:
-            self.game.shop_buy(action - 436)
-        elif 438 <= action <= 442:
-            self.game.shop_sell(action - 438)
-        elif action == 443:
-            self.game.shop_reroll()
-        elif action == 444:
-            self.game.shop_skip()
-
-    reward = self._compute_reward(prev_score, prev_blinds)
-    terminated = self.game.phase in (GamePhase.GAME_OVER, GamePhase.GAME_WON)
-    obs = self._get_obs()
-    info = {"action_mask": self.action_masks(), ...}
-
-    return obs, reward, terminated, False, info
-```
-
-#### Tests (`tests/test_env.py`)
-
-- `env.reset()` returns observation of correct shape
-- `env.step()` with masked valid action → no error
-- `env.action_masks()` returns correct shape, at least one True
-- Random agent (respecting masks) plays 100 full games without crashing
-- Seeded env → identical observation sequences
-- Reward values are in expected ranges
-
----
-
-## Phase 3: Agents
-
-### Step 3 — `balatro_gym/agents/random_agent.py`
-
-Selects a random action from the valid action mask each step. Lower bound baseline.
-
-```python
-def act(obs, action_mask):
-    valid = np.where(action_mask)[0]
-    return np.random.choice(valid)
-```
-
-### Step 4 — `balatro_gym/agents/heuristic_agent.py`
-
-Rule-based agent that sets the upper bound for non-learned play.
-
-**Play phase strategy:**
-1. Evaluate all 218 possible card subsets (1-5 cards), compute the score each would produce (using `evaluate_hand` + joker scoring simulation).
-2. Play the highest-scoring subset.
-3. If best hand scores poorly and discards remain, discard the cards not part of any promising partial hand.
-
-**Shop phase strategy:**
-1. Buy the cheapest affordable joker (if have slots).
-2. Never reroll.
-3. Skip after buying (or if nothing affordable).
-
-```python
-def act(obs, game_state_view, action_mask):
-    if phase == "play":
-        best_action = -1
-        best_score = -1
-        for i in range(218):
-            if action_mask[i]:
-                subset = card_subsets[i]
-                score = simulate_score(hand, subset, jokers)
-                if score > best_score:
-                    best_score = score
-                    best_action = i
-        return best_action
-    elif phase == "shop":
-        # Buy cheapest, else skip
-        ...
-```
-
-### Step 5 — `balatro_gym/rendering/text_renderer.py`
-
-Converts GameStateView to a human-readable string for debugging and visualization. Not used by the RL agent — purely for development and manual inspection.
-
----
-
-## Phase 4: RL Training Pipeline
-
-### Step 6 — `experiments/train_ppo.py`
-
-PPO training using Stable Baselines3 with MaskablePPO from `sb3-contrib`.
-
-**Setup:**
-
-```python
-from sb3_contrib import MaskablePPO
-from sb3_contrib.common.wrappers import ActionMasker
-
-def mask_fn(env):
-    return env.action_masks()
-
-env = ActionMasker(BalatroEnv(config), mask_fn)
-
-model = MaskablePPO(
-    "MlpPolicy",
-    env,
-    verbose=1,
-    learning_rate=3e-4,
-    n_steps=2048,
-    batch_size=64,
-    n_epochs=10,
-    gamma=0.99,
-    ent_coef=0.01,           # Encourage exploration
-    tensorboard_log="./logs/",
-    policy_kwargs={
-        "net_arch": [256, 256],  # Two hidden layers
-    },
-)
-
-model.learn(total_timesteps=1_000_000)
-model.save("ppo_balatro")
-```
-
-**Key hyperparameters to tune:**
-- `learning_rate`: Start with 3e-4, decay if unstable
-- `n_steps`: Rollout buffer size. 2048 is standard. May need larger if episodes are long.
-- `gamma`: Discount factor. 0.99 is standard. Could try 0.995 for long-horizon play.
-- `ent_coef`: Entropy bonus. 0.01 to encourage exploration. Increase to 0.05 if agent converges to suboptimal policy too fast.
-- `net_arch`: [256, 256] for MLP. Could try [512, 256] if underfitting.
-
-**Curriculum training:**
-
-```python
-# Stage 1: Easy (fewer antes, more hands)
-easy_config = GameConfig.easy()
-env = ActionMasker(BalatroEnv(easy_config), mask_fn)
-model = MaskablePPO("MlpPolicy", env, ...)
-model.learn(total_timesteps=500_000)
-
-# Stage 2: Medium
-medium_config = GameConfig.medium()
-env = ActionMasker(BalatroEnv(medium_config), mask_fn)
-model.set_env(env)
-model.learn(total_timesteps=500_000)
-
-# Stage 3: Hard
-hard_config = GameConfig.hard()
-env = ActionMasker(BalatroEnv(hard_config), mask_fn)
-model.set_env(env)
-model.learn(total_timesteps=1_000_000)
-```
-
-**Monitoring (via TensorBoard or wandb):**
-- Episode reward (should trend upward)
-- Episode length (longer = surviving more blinds)
-- Win rate (rolling average over last 100 episodes)
-- Average ante reached
-
-### Step 7 — `experiments/run_baselines.py`
-
-Run random and heuristic agents for 1000+ games, record:
-- Win rate
-- Average ante reached
-- Average total score
-- Average money at game end
-
-### Step 8 — `experiments/evaluation.py`
-
-Compare all agents (random, heuristic, PPO, PPO-curriculum):
-- Win rate by difficulty (easy/medium/hard)
-- Average ante reached
-- Learning curves (timesteps vs. win rate)
-- Per-blind survival rate (what percentage of agents beat blind X?)
-
----
-
-## Phase 5: Experiments and Ablations
-
-1. **Baseline comparison**: Random vs. Heuristic vs. PPO vs. PPO-curriculum
-2. **Reward shaping ablation**: Sparse reward (win/lose only) vs. shaped reward. Does shaping help?
-3. **Curriculum learning**: Train on easy→medium→hard vs. train on hard directly. Does curriculum help?
-4. **Observation ablation**: Does including shop information help? Does joker encoding matter?
-5. **Network architecture**: MLP [256,256] vs. [512,256] vs. [128,128,128]
-
----
-
-## Key Design Principles
-
-### 1. GameState separate from BalatroEnv
-Core game logic lives in `GameState` which knows nothing about Gymnasium. The env is a thin wrapper. This means you can test game logic without Gymnasium and use GameState directly for fast rollouts.
-
-### 2. Joker scoring returns ScoreModification, not raw mutation
-Each joker returns a `ScoreModification` object. This makes the scoring pipeline debuggable — you can log exactly what each joker contributed.
-
-### 3. GameStateView is read-only
-Jokers receive a read-only view. Prevents accidental mutation. Defined as a Protocol in `joker.py` to avoid circular imports.
-
-### 4. Left-to-right joker order matters
-In Balatro, the order of jokers changes the outcome. A +4 mult joker before a x2 mult joker gives different results than reversed. The scoring pipeline respects `self.jokers` list order. The observation preserves slot ordering.
-
-### 5. Config-selected joker pools
-All jokers are code-defined and registered. The config specifies which IDs are available per experiment.
-
-### 6. Single Discrete action space with masking
-All actions (play, discard, buy, sell, reroll, skip) are enumerated in one Discrete(445) space. Action masks handle phase-dependent validity. This is the cleanest approach for MaskablePPO.
-
----
-
-## Potential Challenges
-
-| Challenge | Mitigation |
-|-----------|------------|
-| Scoring pipeline correctness | Parameterized tests; cross-reference Lua source |
-| Large action space (445 actions) | Action masking reduces effective space to ~20-50 per step |
-| Sparse rewards (long episodes) | Shaped reward: partial credit for score progress and blind completion |
-| Observation encoding quality | Ablation study on different encodings; ensure all game-relevant info is included |
-| Curriculum learning transitions | Warm-start from previous stage; monitor for performance dips |
-| Joker ordering in observation | Preserve slot order in one-hot encoding; test that agent learns order-dependent strategies |
-
----
-
-## Verification Checkpoints
-
-1. **After Phase 1**: `pytest tests/` passes. Can run a full game via `GameState` API. **(DONE)**
-2. **After Phase 2**: `gymnasium.make("Balatro-v0")` works. `env.step()` accepts masked Discrete actions. Observation shape is correct.
-3. **After Phase 3**: Random and heuristic agents play 1000 games without crashes. Heuristic win rate > random.
-4. **After Phase 4**: PPO training runs without errors. Training curve shows improvement. PPO win rate > random (at minimum).
-5. **After Phase 5**: All experiments complete. Comparison figures ready for presentation/report.
