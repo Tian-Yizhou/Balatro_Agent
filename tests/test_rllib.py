@@ -8,7 +8,17 @@ import gymnasium as gym
 from gymnasium import spaces
 
 import balatro_gym  # noqa: F401 — triggers env registration
-from balatro_gym.envs.balatro_env import BalatroEnv, TOTAL_ACTIONS
+from balatro_gym.envs.balatro_env import (
+    BUY_OFFSET,
+    CARD_SUBSETS,
+    DISCARD_OFFSET,
+    PLAY_OFFSET,
+    REROLL_ACTION,
+    SELL_OFFSET,
+    SKIP_ACTION,
+    BalatroEnv,
+    TOTAL_ACTIONS,
+)
 from balatro_gym.envs.configs import GameConfig
 from agent.rllib.env_wrapper import BalatroRLlibEnv, make_balatro_env
 
@@ -103,6 +113,68 @@ class TestBalatroRLlibEnv:
                 break
         # Should have terminated (won or lost)
         assert term or trunc or len(valid) == 0
+
+
+class TestBalatroRLlibActionForwarding:
+    def _make_shop_env(self):
+        config = GameConfig(
+            num_antes=2,
+            hands_per_round=2,
+            discards_per_round=2,
+            max_jokers=25,
+            starting_money=100,
+            shop_slots=2,
+            joker_pool=["joker_basic"],
+            starting_joker_ids=["joker_basic"] * 20,
+            consumable_pool=["c_mercury"],
+        )
+        env = BalatroRLlibEnv(BalatroEnv(config=config))
+        _, info = env.reset(seed=17)
+        _, _, _, _, info = env.step(PLAY_OFFSET)
+        assert info["phase"] == "shop"
+        return env, info
+
+    @pytest.mark.parametrize(
+        "action",
+        [PLAY_OFFSET + i for i in range(len(CARD_SUBSETS))]
+        + [DISCARD_OFFSET + i for i in range(len(CARD_SUBSETS))],
+    )
+    def test_forwards_every_play_phase_action_id(self, action):
+        env = BalatroRLlibEnv(BalatroEnv(config=GameConfig.medium()))
+        obs, info = env.reset(seed=action)
+
+        assert obs["action_mask"][action] == 1.0
+
+        next_obs, reward, terminated, truncated, next_info = env.step(action)
+
+        assert next_obs["action_mask"].shape == (TOTAL_ACTIONS,)
+        assert isinstance(reward, float)
+        assert isinstance(terminated, bool)
+        assert isinstance(truncated, bool)
+
+    @pytest.mark.parametrize(
+        "action",
+        [
+            BUY_OFFSET,
+            BUY_OFFSET + 1,
+            BUY_OFFSET + 2,
+            SELL_OFFSET,
+            SELL_OFFSET + 1,
+            SELL_OFFSET + 2,
+            SELL_OFFSET + 3,
+            SELL_OFFSET + 4,
+            REROLL_ACTION,
+            SKIP_ACTION,
+        ],
+    )
+    def test_forwards_every_shop_action_id(self, action):
+        env, info = self._make_shop_env()
+        assert info["action_mask"][action]
+
+        obs, reward, terminated, truncated, next_info = env.step(action)
+
+        assert obs["action_mask"].shape == (TOTAL_ACTIONS,)
+        assert isinstance(reward, float)
 
 
 # -----------------------------------------------------------------------

@@ -211,10 +211,12 @@ class BalatroEnv(gym.Env):
         """
         super().reset(seed=seed)
 
-        # Use explicit seed, or derive from Gymnasium's np_random (which was
-        # seeded by super().reset) for deterministic replay.
+        # Use explicit reset seed first, then a configured episode seed.
+        # Without either, derive a fresh seed from Gymnasium's RNG.
         if seed is not None:
             game_seed = seed
+        elif self.config.seed is not None:
+            game_seed = self.config.seed
         elif self.np_random is not None:
             game_seed = int(self.np_random.integers(0, 2**31))
         else:
@@ -393,20 +395,20 @@ class BalatroEnv(gym.Env):
         """Execute a shop action. Returns True if the action was valid."""
         assert self._game is not None
 
+        if action < 0 or action >= TOTAL_ACTIONS or not self.action_masks()[action]:
+            return False
+
         if BUY_OFFSET <= action < BUY_OFFSET + NUM_BUY_ACTIONS:
             slot_idx = action - BUY_OFFSET
-            self._game.shop_buy(slot_idx)
-            return True
+            return self._game.shop_buy(slot_idx)
 
         elif SELL_OFFSET <= action < SELL_OFFSET + NUM_SELL_ACTIONS:
             joker_idx = action - SELL_OFFSET
-            if joker_idx < len(self._game.jokers):
-                self._game.shop_sell(joker_idx)
+            self._game.shop_sell(joker_idx)
             return True
 
         elif action == REROLL_ACTION:
-            self._game.shop_reroll()
-            return True
+            return self._game.shop_reroll()
 
         elif action == SKIP_ACTION:
             self._game.shop_skip()
