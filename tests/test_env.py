@@ -20,7 +20,9 @@ from balatro_gym.envs.configs import GameConfig
 
 class TestActionSpaceConstants:
     def test_total_actions(self):
-        assert TOTAL_ACTIONS == 446
+        # Phase 1d added a voucher buy slot (446 → 447).
+        # Phase 1e added SKIP_BLIND (447 → 448).
+        assert TOTAL_ACTIONS == 448
 
     def test_card_subsets_count(self):
         assert len(CARD_SUBSETS) == 218
@@ -28,10 +30,11 @@ class TestActionSpaceConstants:
     def test_action_ranges(self):
         assert PLAY_OFFSET == 0
         assert DISCARD_OFFSET == 218
-        assert BUY_OFFSET == 436
-        assert SELL_OFFSET == 439
-        assert REROLL_ACTION == 444
-        assert SKIP_ACTION == 445
+        assert BUY_OFFSET == 436        # buy: 436-439 (4 slots)
+        assert SELL_OFFSET == 440       # sell: 440-444 (5 slots)
+        assert REROLL_ACTION == 445
+        assert SKIP_ACTION == 446
+        # SKIP_BLIND_ACTION is 447 — checked in test_tag.py.
 
 
 class TestEnvCreation:
@@ -39,7 +42,7 @@ class TestEnvCreation:
         config = GameConfig.easy(seed=42)
         env = BalatroEnv(config=config)
         assert env.observation_space.shape[0] > 0
-        assert env.action_space.n == 446
+        assert env.action_space.n == 448
 
     def test_create_with_preset(self):
         env = BalatroEnv(config_preset="easy")

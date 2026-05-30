@@ -18,7 +18,10 @@ import enum
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, Protocol, runtime_checkable
 
-from balatro_gym.core.card import Card, Suit, Rank
+from balatro_gym.core.card import (
+    Card, Edition, EDITION_COST_BONUS, Rank, Suit,
+    edition_scoring_bonus,
+)
 from balatro_gym.core.hand_evaluator import HandResult, HandType
 
 
@@ -105,9 +108,12 @@ def get_all_joker_ids() -> list[str]:
     return list(_JOKER_REGISTRY.keys())
 
 
-def create_joker(joker_id: str) -> BaseJoker:
-    """Create a joker instance by ID."""
-    return _JOKER_REGISTRY[joker_id]()
+def create_joker(joker_id: str, edition: Edition | None = None) -> BaseJoker:
+    """Create a joker instance by ID, optionally with an edition."""
+    joker = _JOKER_REGISTRY[joker_id]()
+    if edition is not None:
+        joker.edition = edition
+    return joker
 
 
 def get_jokers_by_rarity(rarity: int) -> list[str]:
@@ -128,8 +134,23 @@ class BaseJoker:
 
     INFO: ClassVar[JokerInfo]
 
-    def __init__(self) -> None:
+    def __init__(self, edition: Edition | None = None) -> None:
         self._internal_state: dict[str, Any] = {}
+        self.edition: Edition | None = edition
+
+    @property
+    def cost_with_edition(self) -> int:
+        """Shop cost including edition bump (Foil +$2, Holo +$3, Polychrome/Negative +$5)."""
+        if self.edition is None:
+            return self.INFO.cost
+        return self.INFO.cost + EDITION_COST_BONUS.get(self.edition, 0)
+
+    def edition_scoring_bonus(self) -> tuple[int, int, float]:
+        """Chips/mult/x_mult added by this joker's edition (after on_main).
+
+        Negative returns zeros (its effect is the slot bypass, applied elsewhere).
+        """
+        return edition_scoring_bonus(self.edition)
 
     def on_before(self, hand_result: HandResult, scoring_hand: list[Card],
                   full_hand: list[Card], poker_hands: dict[str, bool],

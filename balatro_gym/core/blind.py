@@ -26,27 +26,43 @@ class BlindType(enum.Enum):
 
 
 # ---------------------------------------------------------------------------
-# Base amounts per ante (Lua: get_blind_amount, scaling=1)
+# Base amounts per ante, indexed by score-scaling tier.
+# Tier 1 = base (default), 2 = Green Stake+, 3 = Purple Stake+.
+# Source: Lua get_blind_amount() in functions/misc_functions.lua:919.
 # ---------------------------------------------------------------------------
-_BASE_AMOUNTS: list[int] = [
-    300, 800, 2_000, 5_000, 11_000, 20_000, 35_000, 50_000
-]
+_ANTE_AMOUNTS_BY_TIER: dict[int, list[int]] = {
+    1: [300,  800, 2_000, 5_000, 11_000, 20_000,  35_000,  50_000],
+    2: [300,  900, 2_600, 8_000, 20_000, 36_000,  60_000, 100_000],
+    3: [300, 1_000, 3_200, 9_000, 25_000, 60_000, 110_000, 200_000],
+}
 
 
-def get_blind_amount(ante: int) -> int:
-    """Get the base blind amount for a given ante.
+def get_blind_amount(ante: int, scaling_tier: int = 1) -> int:
+    """Get the base blind amount for a given ante and score-scaling tier.
 
-    Matches Lua's get_blind_amount() with scaling=1.
-    For ante > 8, uses the Lua extrapolation formula.
+    Args:
+        ante: 1-indexed ante.
+        scaling_tier: 1 (base), 2 (Green Stake+), 3 (Purple Stake+).
+
+    Matches Lua's get_blind_amount() in misc_functions.lua.
+    For ante > 8, uses the Lua extrapolation formula seeded by the
+    tier's ante-8 amount.
     """
+    if scaling_tier not in _ANTE_AMOUNTS_BY_TIER:
+        raise ValueError(
+            f"Unknown score scaling tier {scaling_tier!r}. "
+            f"Choose from {sorted(_ANTE_AMOUNTS_BY_TIER)}"
+        )
+    amounts = _ANTE_AMOUNTS_BY_TIER[scaling_tier]
+
     if ante < 1:
         return 100
     if ante <= 8:
-        return _BASE_AMOUNTS[ante - 1]
+        return amounts[ante - 1]
 
-    # Extrapolation for ante > 8 (Lua formula)
+    # Extrapolation for ante > 8 (Lua formula, seeded by tier's ante-8 amount)
     k = 0.75
-    a = _BASE_AMOUNTS[7]  # 50000
+    a = amounts[7]
     b = 1.6
     c = ante - 8
     d = 1 + 0.2 * c
@@ -269,8 +285,9 @@ class BlindManager:
 
     BLINDS_PER_ANTE = [BlindType.SMALL, BlindType.BIG, BlindType.BOSS]
 
-    def __init__(self, num_antes: int = 8):
+    def __init__(self, num_antes: int = 8, score_scaling_tier: int = 1):
         self.num_antes = num_antes
+        self.score_scaling_tier = score_scaling_tier
 
     def get_blind_def(self, blind_type: BlindType, boss_def: BlindDef | None = None) -> BlindDef:
         """Get the blind definition for a blind type."""
@@ -282,12 +299,12 @@ class BlindManager:
             return boss_def or BOSS_BLINDS[0]
 
     def get_score_target(self, ante: int, blind_def: BlindDef) -> int:
-        """Calculate score target: get_blind_amount(ante) * blind.mult.
+        """Calculate score target: get_blind_amount(ante, tier) * blind.mult.
 
         Matches Lua: self.chips = get_blind_amount(ante) * self.mult * ante_scaling
-        We use ante_scaling=1 (default).
+        (We treat ante_scaling=1 — that's a Deck-Back modifier, not yet wired in.)
         """
-        return int(get_blind_amount(ante) * blind_def.mult)
+        return int(get_blind_amount(ante, self.score_scaling_tier) * blind_def.mult)
 
     def choose_boss(self, ante: int, rng: np.random.Generator) -> BlindDef:
         """Select a random boss blind for this ante.

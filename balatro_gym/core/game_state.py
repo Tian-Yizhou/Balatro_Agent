@@ -13,7 +13,11 @@ from typing import Any
 
 import numpy as np
 
-from balatro_gym.core.card import Card, Deck, Rank, Enhancement, Seal, _get_next_uid
+from balatro_gym.core.back import BaseBack, create_back
+from balatro_gym.core.card import Card, Deck, Edition, Rank, Enhancement, Seal, _get_next_uid
+from balatro_gym.core.stake import BaseStake, create_stake
+from balatro_gym.core.tag import BaseTag, create_tag
+from balatro_gym.core.voucher import BaseVoucher, create_voucher
 from balatro_gym.core.hand_evaluator import HandResult, HandType, evaluate_hand
 from balatro_gym.core.hand_levels import HandLevelManager
 from balatro_gym.core.joker import BaseJoker, ScoreModification, create_joker
@@ -116,6 +120,16 @@ class GameStateSnapshot:
     hand_type_played_counts: dict[str, int]
     consumables: list[BaseConsumable] = field(default_factory=list)
     consumable_slots: int = 2
+    # Effective slot counts including Negative-edition bonuses. Default to
+    # the base max for callers that don't populate them.
+    effective_max_jokers: int = 0
+    effective_consumable_slots: int = 0
+
+    def __post_init__(self):
+        if self.effective_max_jokers == 0:
+            self.effective_max_jokers = self.max_jokers
+        if self.effective_consumable_slots == 0:
+            self.effective_consumable_slots = self.consumable_slots
 
 
 class GameState:
@@ -139,6 +153,10 @@ class GameState:
         shop_slots: int = 2,
         reroll_base_cost: int = 5,
         consumable_slots: int = 2,
+        back_id: str | None = None,
+        stake_id: str = "stake_white",
+        available_voucher_ids: list[str] | None = None,
+        available_tag_ids: list[str] | None = None,
         seed: int | None = None,
     ):
         # Config
@@ -154,13 +172,24 @@ class GameState:
         self.shop_slots = shop_slots
         self.reroll_base_cost = reroll_base_cost
         self.consumable_slots = consumable_slots
+        self.back: BaseBack | None = create_back(back_id) if back_id else None
+        self.stake: BaseStake = create_stake(stake_id)
+        self.available_voucher_ids: list[str] = list(available_voucher_ids or [])
+        # Track voucher IDs already redeemed this run (excluded from shop pool).
+        self.redeemed_vouchers: list[str] = []
+        # Tag pool + currently-active tags awaiting their trigger.
+        self.available_tag_ids: list[str] = list(available_tag_ids or [])
+        self.active_tags: list[BaseTag] = []
 
         # RNG
         self.rng = np.random.default_rng(seed)
 
         # Game objects
         self.deck = Deck(self.rng)
-        self.blind_manager = BlindManager(num_antes)
+        self.blind_manager = BlindManager(
+            num_antes,
+            score_scaling_tier=self.stake.MODIFIERS.score_scaling_tier,
+        )
         self.hand_levels = HandLevelManager()
         self.shop = Shop(
             joker_pool=self.available_joker_ids,
@@ -168,6 +197,8 @@ class GameState:
             num_slots=shop_slots,
             reroll_base_cost=reroll_base_cost,
             consumable_pool=self.available_consumable_ids,
+            voucher_pool=list(self.available_voucher_ids),
+            num_voucher_slots=1 if self.available_voucher_ids else 0,
         )
 
         # Mutable state (set in reset)
@@ -184,6 +215,8 @@ class GameState:
         self.hands_played_this_round: int = 0
         self.active_boss_effect: BossEffect | None = None
         self.current_blind_def: BlindDef = SMALL_BLIND
+        # Per-round hand-size bonus (Juggle Tag adds 3, reset at end of round).
+        self.current_round_hand_size_bonus: int = 0
 
         # Hand type play counts (for Supernova, etc.)
         self.hand_type_played_counts: dict[str, int] = {}
@@ -202,13 +235,39 @@ class GameState:
 
     @property
     def effective_hand_size(self) -> int:
-        """Hand size including passive joker effects."""
-        bonus = 0
+        """Hand size including passive joker effects and per-round tag bonuses."""
+        bonus = self.current_round_hand_size_bonus
         view = self.get_view()
         for joker in self.jokers:
             effects = joker.passive_effects(view)
             bonus += effects.get("hand_size", 0)
         return self.hand_size + bonus
+
+    @property
+    def effective_max_jokers(self) -> int:
+        """Joker slots including Negative-edition bonuses.
+
+        Each Negative-edition joker grants +1 slot, so the cap grows with
+        the number of negatives held.
+        """
+        negatives = sum(
+            1 for j in self.jokers if j.edition == Edition.NEGATIVE
+        )
+        return self.max_jokers + negatives
+
+    @property
+    def effective_consumable_slots(self) -> int:
+        """Consumable slots including Negative-edition bonuses.
+
+        Each Negative-edition consumable grants +1 slot. Consumables don't
+        currently carry an ``edition`` attribute (added in a later phase);
+        until then this returns the base slot count.
+        """
+        negatives = sum(
+            1 for c in self.consumables
+            if getattr(c, "edition", None) == Edition.NEGATIVE
+        )
+        return self.consumable_slots + negatives
 
     # -------------------------------------------------------------------
     # Lifecycle
@@ -231,6 +290,8 @@ class GameState:
         self.hands_played_this_round = 0
         self.active_boss_effect = None
         self.current_blind_def = SMALL_BLIND
+        self.current_round_hand_size_bonus = 0
+        self.active_tags = []
         self.hand_type_played_counts = {}
         self.total_hands_played = 0
         self.blinds_beaten = 0
@@ -259,6 +320,9 @@ class GameState:
         for key in self.hand_type_played_counts:
             pass  # Keep cumulative counts (they persist across the run)
 
+        # Fire round-start tag hooks BEFORE drawing — Juggle bumps hand size.
+        self._fire_tag_hooks("on_round_start")
+
         # Reset deck and deal
         self.deck.reset()
         self.hand = self.deck.draw(self.effective_hand_size)
@@ -283,16 +347,23 @@ class GameState:
     def _end_blind(self) -> None:
         """Handle beating a blind: award money, notify jokers, advance."""
         self.blinds_beaten += 1
+        beaten_blind_type = self.current_blind_type
 
         # Remove boss effect
         if self.active_boss_effect is not None:
             self.active_boss_effect.remove(self)
             self.active_boss_effect = None
 
+        # Per-round tag bonuses (Juggle's +3 hand size) expire here.
+        self.current_round_hand_size_bonus = 0
+
+        # Fire blind-beaten tag hooks (Investment pays out on Boss).
+        self._fire_tag_hooks("on_blind_beaten", beaten_blind_type)
+
         # Blue Seal: for each card in hand with Blue Seal, create planet card
         for card in self.hand:
             if card.seal == Seal.BLUE and not card.face_down:
-                if len(self.consumables) < self.consumable_slots:
+                if len(self.consumables) < self.effective_consumable_slots:
                     planet_pool = get_consumables_by_type(ConsumableType.PLANET)
                     if planet_pool:
                         chosen = str(self.rng.choice(planet_pool))
@@ -310,43 +381,106 @@ class GameState:
         # Advance blind
         self.blind_index += 1
         if self.blind_index >= len(BlindManager.BLINDS_PER_ANTE):
-            # Finished all blinds in this ante
+            # Finished all blinds in this ante.
             self.blind_index = 0
-            self.ante += 1
-            if self.ante > self.num_antes:
+            if self.ante >= self.num_antes:
+                # Just beat the final boss — game won. Leave self.ante at
+                # num_antes so info["ante"] reports "highest ante reached",
+                # not "ante counter after a phantom increment".
                 self.phase = GamePhase.GAME_WON
                 return
+            self.ante += 1
 
-        # Enter shop phase
+        # Enter shop phase. Generate offerings first so on_shop_enter hooks
+        # (Foil/Voucher tags) can mutate them.
         self.phase = GamePhase.SHOP
         self.shop.generate_offerings()
+        self._fire_tag_hooks("on_shop_enter")
+
+    def _fire_tag_hooks(self, hook_name: str, *args) -> None:
+        """Call ``hook_name`` on every active tag; drop the ones that consumed."""
+        if not self.active_tags:
+            return
+        remaining: list[BaseTag] = []
+        for tag in self.active_tags:
+            consumed = getattr(tag, hook_name)(self, *args)
+            if not consumed:
+                remaining.append(tag)
+        self.active_tags = remaining
+
+    def skip_blind(self) -> BaseTag | None:
+        """Skip the current Small or Big blind in exchange for a random tag.
+
+        Boss blinds cannot be skipped. Returns the awarded tag, or ``None``
+        if the skip was not legal (wrong phase, boss blind, empty pool).
+        Advances ``blind_index``; if the next blind ends the ante, transitions
+        to shop / win as if the blind had been beaten (without scoring or
+        end-of-round payouts).
+        """
+        if self.phase != GamePhase.PLAY:
+            return None
+        if self.current_blind_type == BlindType.BOSS:
+            return None
+        if not self.available_tag_ids:
+            return None
+
+        tag_id = str(self.rng.choice(self.available_tag_ids))
+        tag = create_tag(tag_id)
+        consumed = tag.on_award(self)
+        if not consumed:
+            self.active_tags.append(tag)
+
+        # Per-round expiries also fire on a skip (no Juggle bonus carrying
+        # past a skipped round).
+        self.current_round_hand_size_bonus = 0
+
+        # Advance the blind counter without scoring or economy payout.
+        self.blind_index += 1
+        if self.blind_index >= len(BlindManager.BLINDS_PER_ANTE):
+            self.blind_index = 0
+            if self.ante >= self.num_antes:
+                self.phase = GamePhase.GAME_WON
+                return tag
+            self.ante += 1
+        self._start_blind()
+        return tag
 
     def _calculate_economy(self) -> int:
         """Calculate end-of-round money award.
 
         Lua (evaluate_round):
         1. blind.dollars (Small=3, Big=4, Boss=5)
-        2. +$1 per unused hand remaining
-        3. Joker dollar bonuses (calculate_dollar_bonus)
-        4. Interest: $1 per $5 held, max $5
+        2. +$/unused hand (vanilla $1; Green Deck $2)
+        3. +$/unused discard (vanilla $0; Green Deck $1)
+        4. Joker dollar bonuses (calculate_dollar_bonus)
+        5. Interest: $1 per $5 held, max $5 — suppressed by Green Deck
         """
         dollars = 0
 
-        # 1. Blind reward
-        dollars += self.current_blind_def.dollars
+        # 1. Blind reward — suppressed for Small Blind under Red Stake (and above).
+        skip_blind_reward = (
+            self.stake.MODIFIERS.no_small_blind_money
+            and self.current_blind_type == BlindType.SMALL
+        )
+        if not skip_blind_reward:
+            dollars += self.current_blind_def.dollars
 
-        # 2. $1 per unused hand
-        dollars += self.hands_remaining
+        # 2-3. Per-unused-resource bonuses (back overrides defaults).
+        per_hand = self.back.money_per_unused_hand() if self.back else 1
+        per_discard = self.back.money_per_unused_discard() if self.back else 0
+        dollars += self.hands_remaining * per_hand
+        dollars += self.discards_remaining * per_discard
 
-        # 3. Joker dollar bonuses
+        # 4. Joker dollar bonuses
         view = self.get_view()
         for joker in self.jokers:
             dollars += joker.calculate_dollar_bonus(view)
 
-        # 4. Interest (must calculate BEFORE adding to money)
+        # 5. Interest (must calculate BEFORE adding to money)
         # Interest is on current money, not including this round's earnings
-        interest = min(self.money // 5, 5)
-        dollars += interest
+        if not (self.back and self.back.disables_interest()):
+            interest = min(self.money // 5, 5)
+            dollars += interest
 
         return dollars
 
@@ -460,7 +594,7 @@ class GameState:
         # Purple Seal: create a random Tarot if consumable slot available
         for card in discarded:
             if card.seal == Seal.PURPLE and not card.face_down:
-                if len(self.consumables) < self.consumable_slots:
+                if len(self.consumables) < self.effective_consumable_slots:
                     tarot_pool = get_consumables_by_type(ConsumableType.TAROT)
                     if tarot_pool:
                         chosen = str(self.rng.choice(tarot_pool))
@@ -491,17 +625,57 @@ class GameState:
             raise ValueError(f"Cannot buy in phase {self.phase}")
 
         item, remaining = self.shop.buy_item(
-            slot_index, self.money, self.jokers, self.max_jokers,
-            self.consumables, self.consumable_slots,
+            slot_index, self.money, self.jokers, self.effective_max_jokers,
+            self.consumables, self.effective_consumable_slots,
         )
         if item is not None:
             if isinstance(item, BaseJoker):
                 self.jokers.append(item)
             elif isinstance(item, BaseConsumable):
                 self.consumables.append(item)
+            elif isinstance(item, BaseVoucher):
+                self._redeem_voucher(item)
             self.money = remaining
             return True
         return False
+
+    def _redeem_voucher(self, voucher: BaseVoucher) -> None:
+        """Apply a voucher's effects to GameState and the shop.
+
+        Static EFFECTS:
+        - Passive shop fields (slots, edition_rate, reroll_base_cost,
+          cost_multiplier) — mutated in place; they affect the NEXT
+          shop visit (Lua semantics — current offerings are unchanged).
+        - One-time game-state deltas (hands_per_round, etc.) — mutated
+          immediately. The current round's *_remaining counters are
+          left alone; the delta applies from the next round forward.
+        """
+        self.redeemed_vouchers.append(voucher.INFO.id)
+        # Exclude this voucher from future shop spawns this run.
+        if voucher.INFO.id in self.shop.voucher_pool:
+            self.shop.voucher_pool.remove(voucher.INFO.id)
+
+        eff = voucher.EFFECTS
+        # Passive shop modifiers
+        self.shop.num_slots += eff.shop_slots_delta
+        self.shop.cost_multiplier *= eff.shop_cost_multiplier
+        self.shop.edition_rate *= eff.edition_rate_multiplier
+        self.shop.reroll_base_cost += eff.reroll_base_cost_delta
+        # reroll_cost is "current shop visit's reroll cost" — also adjust so
+        # subsequent rerolls this visit reflect the discount.
+        self.shop.reroll_cost = max(0, self.shop.reroll_cost + eff.reroll_base_cost_delta)
+
+        # One-time game-state deltas
+        self.hands_per_round += eff.hands_per_round_delta
+        self.discards_per_round += eff.discards_per_round_delta
+        self.hand_size += eff.hand_size_delta
+        self.max_jokers += 0   # vouchers don't grant joker slots in starters
+        self.consumable_slots += eff.consumable_slots_delta
+        if eff.starting_money_delta:
+            self.money += eff.starting_money_delta
+
+        # Subclass hook for non-static effects
+        voucher.on_redeem(self)
 
     def shop_sell(self, joker_index: int) -> int:
         """Sell a joker from the player's collection. Returns money gained."""
@@ -662,7 +836,7 @@ class GameState:
                         if mod.x_mult > 0:
                             mult = int(mult * mod.x_mult)
 
-        # 6. Main joker effects (left to right)
+        # 6. Main joker effects (left to right), then per-joker edition bonus.
         for joker in self.jokers:
             mod = joker.on_main(hand_result, scoring_hand, full_hand,
                                 poker_hands, scoring_name, view)
@@ -673,6 +847,15 @@ class GameState:
                     mult += mod.mult_mod
                 if mod.Xmult_mod > 0:
                     mult = int(mult * mod.Xmult_mod)
+            # Joker edition bonus — applied AFTER the joker's own mod, so it
+            # multiplies the partial total (matching Lua scoring order).
+            ed_chips, ed_mult, ed_x = joker.edition_scoring_bonus()
+            if ed_chips:
+                chips += ed_chips
+            if ed_mult:
+                mult += ed_mult
+            if ed_x > 0:
+                mult = int(mult * ed_x)
 
         # 7. Joker "after" phase (Ice Cream loses chips, etc.)
         for joker in self.jokers:
@@ -751,11 +934,11 @@ class GameState:
 
         if "create_consumable" in effects:
             for cid in effects["create_consumable"]:
-                if len(self.consumables) < self.consumable_slots:
+                if len(self.consumables) < self.effective_consumable_slots:
                     self.consumables.append(create_consumable(cid))
 
         if "create_joker" in effects:
-            if len(self.jokers) < self.max_jokers:
+            if len(self.jokers) < self.effective_max_jokers:
                 self.jokers.append(create_joker(effects["create_joker"]))
 
     # -------------------------------------------------------------------
@@ -780,6 +963,8 @@ class GameState:
             hand_type_played_counts=dict(self.hand_type_played_counts),
             consumables=list(self.consumables),
             consumable_slots=self.consumable_slots,
+            effective_max_jokers=self.effective_max_jokers,
+            effective_consumable_slots=self.effective_consumable_slots,
         )
 
     # -------------------------------------------------------------------
@@ -984,10 +1169,10 @@ class GameState:
             for i, o in available:
                 if o.item_type == "joker":
                     affordable = (o.cost <= self.money
-                                  and len(self.jokers) < self.max_jokers)
+                                  and len(self.jokers) < self.effective_max_jokers)
                 else:
                     affordable = (o.cost <= self.money
-                                  and len(self.consumables) < self.consumable_slots)
+                                  and len(self.consumables) < self.effective_consumable_slots)
                 can_buy.append((i, o.name, o.cost, affordable, o.item_type))
             return {
                 "can_buy": can_buy,
