@@ -1,4 +1,11 @@
-"""Game configuration and difficulty presets."""
+"""Game configuration dataclass and YAML loader.
+
+Difficulty *content* (joker pools, consumable pools, antes) lives in
+:mod:`balatro_gym.difficulty` — one file per difficulty, plug-in style.
+This module only defines the :class:`GameConfig` dataclass plus a
+backward-compatible ``GameConfig.easy()/.medium()/.hard()`` shim that
+delegates to the new registry.
+"""
 
 from __future__ import annotations
 
@@ -8,55 +15,24 @@ from typing import Any
 
 import yaml
 
-from balatro_gym.core.joker import get_all_joker_ids, get_jokers_by_rarity
-from balatro_gym.core.consumable import (
-    get_all_consumable_ids, get_consumables_by_type, ConsumableType,
-)
-
-
-# Joker pools by difficulty tier
-_PRIORITY_1_JOKERS: list[str] = [
-    "joker_basic", "greedy_joker", "lusty_joker", "wrathful_joker",
-    "gluttonous_joker", "jolly_joker", "zany_joker", "banner",
-    "mystic_summit", "ice_cream",
-]
-
-_PRIORITY_2_JOKERS: list[str] = [
-    "raised_fist", "fibonacci", "even_steven", "odd_todd", "scholar",
-    "business_card", "stencil", "half_joker", "blueprint", "dna",
-]
-
-_PRIORITY_3_JOKERS: list[str] = [
-    "abstract_joker", "blackboard", "the_duo", "the_trio", "the_family",
-    "loyalty_card", "ceremonial_dagger", "ride_the_bus", "runner", "supernova",
-]
-
-# Consumable pools by difficulty tier
-_ALL_PLANETS: list[str] = get_consumables_by_type(ConsumableType.PLANET)
-
-# Simple tarots (enhancements + suit conversion — no card destruction/creation)
-_SIMPLE_TAROTS: list[str] = [
-    "c_magician", "c_empress", "c_hierophant", "c_lovers", "c_chariot",
-    "c_justice", "c_devil", "c_tower",
-    "c_star", "c_moon", "c_sun", "c_world",
-    "c_strength", "c_hermit",
-]
-
-_ALL_TAROTS: list[str] = get_consumables_by_type(ConsumableType.TAROT)
-
-_SIMPLE_SPECTRALS: list[str] = [
-    "c_talisman", "c_deja_vu", "c_trance", "c_medium",
-    "c_aura", "c_cryptid",
-]
-
-_ALL_SPECTRALS: list[str] = get_consumables_by_type(ConsumableType.SPECTRAL)
+from balatro_gym.core.back import get_all_back_ids
+from balatro_gym.core.consumable import get_all_consumable_ids
+from balatro_gym.core.joker import get_all_joker_ids
+from balatro_gym.core.stake import get_all_stake_ids
+from balatro_gym.core.tag import get_all_tag_ids
+from balatro_gym.core.voucher import get_all_voucher_ids
 
 
 @dataclass
 class GameConfig:
     """Configuration for a Balatro game environment.
 
-    Controls game parameters, joker pool, consumable pool, and difficulty settings.
+    Controls game parameters, joker pool, consumable pool, and difficulty
+    settings. Construct directly, via :meth:`from_file` to load from YAML,
+    or via the plug-in registry::
+
+        from balatro_gym.difficulty import get_difficulty
+        cfg = get_difficulty("easy", seed=42)
     """
     num_antes: int = 8
     hands_per_round: int = 4
@@ -70,6 +46,10 @@ class GameConfig:
     joker_pool: list[str] = field(default_factory=list)
     starting_joker_ids: list[str] = field(default_factory=list)
     consumable_pool: list[str] = field(default_factory=list)
+    voucher_pool: list[str] = field(default_factory=list)
+    tag_pool: list[str] = field(default_factory=list)
+    deck_back: str | None = None     # ID from balatro_gym.core.back; None = no modifier
+    stake: str = "stake_white"       # ID from balatro_gym.core.stake; default = no modifier
     seed: int | None = None
 
     def __post_init__(self) -> None:
@@ -88,63 +68,48 @@ class GameConfig:
         for cid in self.consumable_pool:
             if cid not in all_consumable_ids:
                 raise ValueError(f"Unknown consumable ID in pool: {cid!r}")
+        all_voucher_ids = set(get_all_voucher_ids())
+        for vid in self.voucher_pool:
+            if vid not in all_voucher_ids:
+                raise ValueError(f"Unknown voucher ID in pool: {vid!r}")
+        all_tag_ids = set(get_all_tag_ids())
+        for tid in self.tag_pool:
+            if tid not in all_tag_ids:
+                raise ValueError(f"Unknown tag ID in pool: {tid!r}")
+        if self.deck_back is not None and self.deck_back not in set(get_all_back_ids()):
+            raise ValueError(
+                f"Unknown deck_back: {self.deck_back!r}. "
+                f"Available: {get_all_back_ids()}"
+            )
+        if self.stake not in set(get_all_stake_ids()):
+            raise ValueError(
+                f"Unknown stake: {self.stake!r}. "
+                f"Available: {get_all_stake_ids()}"
+            )
+
+    # ------------------------------------------------------------------
+    # Backward-compatible preset shims. The actual content lives in
+    # balatro_gym/difficulty/<name>.py. Imports are lazy to avoid a
+    # circular dependency at module load time.
+    # ------------------------------------------------------------------
 
     @classmethod
     def easy(cls, seed: int | None = None) -> GameConfig:
-        """Easy difficulty: 4 antes, extra hands/discards, simple jokers + planets."""
-        return cls(
-            num_antes=4,
-            hands_per_round=5,
-            discards_per_round=4,
-            hand_size=8,
-            max_jokers=5,
-            starting_money=6,
-            shop_slots=2,
-            reroll_base_cost=5,
-            consumable_slots=2,
-            joker_pool=list(_PRIORITY_1_JOKERS),
-            starting_joker_ids=["joker_basic"],
-            consumable_pool=list(_ALL_PLANETS + _SIMPLE_TAROTS),
-            seed=seed,
-        )
+        """Easy preset — see :mod:`balatro_gym.difficulty.easy`."""
+        from balatro_gym.difficulty import get_difficulty
+        return get_difficulty("easy", seed=seed)
 
     @classmethod
     def medium(cls, seed: int | None = None) -> GameConfig:
-        """Medium difficulty: 6 antes, standard params, expanded pools."""
-        return cls(
-            num_antes=6,
-            hands_per_round=4,
-            discards_per_round=3,
-            hand_size=8,
-            max_jokers=5,
-            starting_money=4,
-            shop_slots=2,
-            reroll_base_cost=5,
-            consumable_slots=2,
-            joker_pool=_PRIORITY_1_JOKERS + _PRIORITY_2_JOKERS,
-            starting_joker_ids=[],
-            consumable_pool=list(_ALL_PLANETS + _ALL_TAROTS + _SIMPLE_SPECTRALS),
-            seed=seed,
-        )
+        """Medium preset — see :mod:`balatro_gym.difficulty.medium`."""
+        from balatro_gym.difficulty import get_difficulty
+        return get_difficulty("medium", seed=seed)
 
     @classmethod
     def hard(cls, seed: int | None = None) -> GameConfig:
-        """Hard difficulty: 8 antes, all jokers/consumables, no starting advantage."""
-        return cls(
-            num_antes=8,
-            hands_per_round=4,
-            discards_per_round=3,
-            hand_size=8,
-            max_jokers=5,
-            starting_money=4,
-            shop_slots=2,
-            reroll_base_cost=5,
-            consumable_slots=2,
-            joker_pool=_PRIORITY_1_JOKERS + _PRIORITY_2_JOKERS + _PRIORITY_3_JOKERS,
-            starting_joker_ids=[],
-            consumable_pool=list(_ALL_PLANETS + _ALL_TAROTS + _ALL_SPECTRALS),
-            seed=seed,
-        )
+        """Hard preset — see :mod:`balatro_gym.difficulty.hard`."""
+        from balatro_gym.difficulty import get_difficulty
+        return get_difficulty("hard", seed=seed)
 
     @classmethod
     def from_file(cls, path: str | Path, base: str = "medium") -> GameConfig:
@@ -154,13 +119,15 @@ class GameConfig:
         Fields not in the file keep their base preset defaults.
 
         The special key ``base`` in the YAML selects which preset to use
-        as the starting point (``"easy"``, ``"medium"``, or ``"hard"``).
-        If ``base`` is present in the file, the *base* parameter is ignored.
+        as the starting point. If ``base`` is present in the file, the
+        *base* parameter is ignored. The base can be any difficulty name
+        registered under :mod:`balatro_gym.difficulty`, including
+        user-added files.
 
         Args:
             path: Path to a YAML config file.
-            base: Default base preset (``"easy"``, ``"medium"``, ``"hard"``).
-                  Overridden by the ``base`` key in the YAML file if present.
+            base: Default base preset name. Overridden by the ``base``
+                  key in the YAML file if present.
 
         Example YAML file::
 
@@ -169,20 +136,20 @@ class GameConfig:
             num_antes: 2
             hands_per_round: 6
         """
+        from balatro_gym.difficulty import get_difficulty, list_difficulties
+
         with open(path) as f:
             data: dict[str, Any] = yaml.safe_load(f) or {}
 
-        # Determine base preset
         preset_name = data.pop("base", base)
-        factory = {"easy": cls.easy, "medium": cls.medium, "hard": cls.hard}
-        if preset_name not in factory:
+        available = list_difficulties()
+        if preset_name not in available:
             raise ValueError(
                 f"Unknown base preset {preset_name!r}. "
-                f"Choose from: {list(factory)}"
+                f"Choose from: {available}"
             )
-        base_config = factory[preset_name]()
 
-        # Merge: YAML values override the base
+        base_config = get_difficulty(preset_name)
         merged = base_config.to_dict()
         merged.update(data)
         return cls(**merged)
@@ -202,6 +169,10 @@ class GameConfig:
             "joker_pool": list(self.joker_pool),
             "starting_joker_ids": list(self.starting_joker_ids),
             "consumable_pool": list(self.consumable_pool),
+            "voucher_pool": list(self.voucher_pool),
+            "tag_pool": list(self.tag_pool),
+            "deck_back": self.deck_back,
+            "stake": self.stake,
             "seed": self.seed,
         }
 

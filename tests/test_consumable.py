@@ -32,6 +32,19 @@ class MockGameState:
         self.hand_levels = HandLevelManager()
         self.available_joker_ids: list[str] = ["joker_basic"]
 
+    @property
+    def effective_max_jokers(self) -> int:
+        # Mock: count Negative-edition jokers as bonus slots.
+        from balatro_gym.core.card import Edition
+        neg = sum(1 for j in self.jokers if getattr(j, "edition", None) == Edition.NEGATIVE)
+        return self.max_jokers + neg
+
+    @property
+    def effective_consumable_slots(self) -> int:
+        from balatro_gym.core.card import Edition
+        neg = sum(1 for c in self.consumables if getattr(c, "edition", None) == Edition.NEGATIVE)
+        return self.consumable_slots + neg
+
     def _set_hand(self, cards: list[Card]) -> None:
         """Replace hand with specific cards (for controlled testing)."""
         self.hand = cards

@@ -82,12 +82,12 @@ def make(
         if seed is not None:
             config = GameConfig(**{**config.to_dict(), "seed": seed})
     else:
-        factory = {"easy": GameConfig.easy, "medium": GameConfig.medium, "hard": GameConfig.hard}
-        if preset not in factory:
+        from balatro_gym.difficulty import get_difficulty, list_difficulties
+        if preset not in list_difficulties():
             raise ValueError(
-                f"Unknown preset {preset!r}. Choose from: {list(factory)}"
+                f"Unknown preset {preset!r}. Choose from: {list_difficulties()}"
             )
-        config = factory[preset](seed=seed)
+        config = get_difficulty(preset, seed=seed)
 
     return BalatroEnv(config=config, render_mode=render_mode, reward_fn=reward_fn)
 

@@ -57,8 +57,10 @@ class ConsumableGameView(Protocol):
     money: int
     jokers: list[Any]
     max_jokers: int
+    effective_max_jokers: int
     consumables: list[BaseConsumable]
     consumable_slots: int
+    effective_consumable_slots: int
     rng: np.random.Generator
 
 
@@ -532,7 +534,7 @@ class TarotJudgement(BaseConsumable):
 
     def can_use(self, view: ConsumableGameView,
                 highlighted_indices: list[int]) -> bool:
-        return len(highlighted_indices) == 0 and len(view.jokers) < view.max_jokers
+        return len(highlighted_indices) == 0 and len(view.jokers) < view.effective_max_jokers
 
     def use(self, game_state: Any,
             highlighted_indices: list[int]) -> dict[str, Any]:
@@ -565,13 +567,16 @@ class TarotWheelOfFortune(BaseConsumable):
     def use(self, game_state: Any,
             highlighted_indices: list[int]) -> dict[str, Any]:
         if game_state.rng.random() < 1 / 4:
+            # Lua: Wheel of Fortune rolls Foil/Holo/Polychrome (NOT Negative).
             editions = [Edition.FOIL, Edition.HOLO, Edition.POLYCHROME]
             edition = editions[int(game_state.rng.integers(0, len(editions)))]
-            # Wheel of Fortune applies edition to joker — but our jokers don't have
-            # edition fields yet. Store as internal state for now.
-            idx = int(game_state.rng.integers(0, len(game_state.jokers)))
+            # Only apply to jokers that currently have no edition.
+            unedited = [i for i, j in enumerate(game_state.jokers) if j.edition is None]
+            if not unedited:
+                return {"message": "Wheel of Fortune missed (no eligible jokers)"}
+            idx = unedited[int(game_state.rng.integers(0, len(unedited)))]
             joker = game_state.jokers[idx]
-            joker._internal_state["edition"] = edition
+            joker.edition = edition
             return {"message": f"Added {edition.name} to {joker.INFO.name}"}
         return {"message": "Wheel of Fortune missed (3/4 chance)"}
 

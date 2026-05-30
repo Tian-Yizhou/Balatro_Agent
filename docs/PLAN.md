@@ -12,21 +12,26 @@ Analogous to how Atari provides arcade-game benchmarks for vision-based RL, and 
 
 ### 2.1 Core Game Engine (`balatro_gym/core/`)
 
-A framework-independent game engine implementing Balatro's mechanics:
+A framework-independent game engine implementing Balatro's mechanics. All registries follow a class-per-entity + `@register_*` decorator pattern, so adding content is one file edit with no cross-cutting changes.
 
-| Module | Responsibility |
-|--------|---------------|
-| `card.py` | Card/Deck primitives, 8 enhancements, 3 editions, 4 seals |
-| `hand_evaluator.py` | 12 poker hand types, base scoring |
-| `hand_levels.py` | Mutable hand-type levels (Planet card upgrades) |
-| `joker.py` | 30 jokers via registry pattern, 8 scoring hooks per joker |
-| `consumable.py` | 40 consumables (22 Tarots, 12 Planets, 6 Spectrals) |
-| `blind.py` | Blind progression, 9 boss blind debuff effects |
-| `shop.py` | Shop offering generation, buy/sell/reroll |
-| `game_state.py` | Full lifecycle + 10-step scoring pipeline |
-| `seed_id.py` | Reproducible episode seeds (YYYYMMDD-HHMM-XXXXXXXX) |
+| Module | Responsibility | Status |
+|--------|---------------|--------|
+| `card.py` | Card/Deck primitives, 8 enhancements, 3 editions, 4 seals | done |
+| `hand_evaluator.py` | 12 poker hand types, base scoring | done |
+| `hand_levels.py` | Mutable hand-type levels (Planet card upgrades) | done |
+| `joker.py` | 30 of 150 jokers via registry pattern, 8 scoring hooks per joker | partial |
+| `consumable.py` | 44 of 52 consumables (22 Tarots, 12 Planets, 10 Spectrals) | mostly done |
+| `blind.py` | Blind progression + 9 of 30 boss blind effects + score scaling tiers | partial |
+| `shop.py` | Shop offering generation, buy/sell/reroll | done |
+| `back.py` | Deck variants — registry + 5 of 15 starter decks (Red, Blue, Yellow, Black, Green) | scaffolded |
+| `stake.py` | Difficulty stakes — registry + 5 of 8 starter stakes (White/Red/Green/Blue/Purple) | scaffolded |
+| `voucher.py` | 32 vouchers + voucher shop slot | planned (Phase 1d) |
+| `tag.py` | 24 tags + skip-blind reward mechanic | planned (Phase 1e) |
+| `booster.py` | 5 booster pack kinds + pick-from-pool flow | planned (Phase 1f) |
+| `game_state.py` | Full lifecycle + 10-step scoring pipeline; back/stake hooks wired | done |
+| `seed_id.py` | Reproducible episode seeds (YYYYMMDD-HHMM-XXXXXXXX) | done |
 
-**Status**: Complete. 383 tests passing.
+**Status**: Core engine complete; content / subsystem expansion in progress — see Section 6.1.
 
 ### 2.2 Gymnasium Interface (`balatro_gym/envs/`)
 
@@ -62,25 +67,22 @@ vec_env = balatro_gym.make_vec("easy", num_envs=8)
 
 **Status**: Complete.
 
-### 2.4 Difficulty Configuration (`balatro_gym/envs/configs.py`)
+### 2.4 Difficulty Configuration (`balatro_gym/difficulty/`)
 
-| Parameter | Easy | Medium | Hard |
-|-----------|------|--------|------|
-| Antes | 4 | 6 | 8 |
-| Hands/round | 5 | 4 | 4 |
-| Discards/round | 4 | 3 | 3 |
-| Starting money | $6 | $4 | $4 |
-| Joker pool | 10 | 20 | 30 |
-| Consumable pool | Planets + simple Tarots | + all Tarots + simple Spectrals | All 40 |
+Difficulty is a **plug-in system** decoupled from the simulation engine. One Python file per difficulty under `balatro_gym/difficulty/`, each exposing `build_config(seed=None) -> GameConfig`. The registry auto-discovers files by filename — no registration boilerplate. This lets the engine simulate the full game while individual difficulties expose only a subset of content.
 
-Custom configs via YAML merge-over-defaults:
-```yaml
-base: easy
-num_antes: 5
-starting_money: 8
-```
+| Difficulty | Antes | Joker pool | Consumable pool | Deck back | Stake |
+|---|---|---|---|---|---|
+| `easy` | 4 | 10 entry-level | Planets only | – | – |
+| `medium` | 6 | All 30 | + all Tarots + safe Spectrals | – | – |
+| `hard` | 8 | All 30 | All 44 | (planned: rotates) | (planned: gold) |
+| `customized` | template | template | template | template | template |
 
-**Status**: Complete.
+Adding a new difficulty is one file (`cp customized.py my_setup.py` + edit). `balatro_gym.make("my_setup")` works immediately. Custom configs via YAML still supported (`base: easy` + overrides).
+
+`GameConfig` fields now include `deck_back` (str | None) and `stake` (str, default `"stake_white"`) for the new subsystems; future fields land as each phase completes (`voucher_pool`, `tag_pool`, `booster_pack_pool`, `enable_skip_blind`).
+
+**Status**: Plug-in registry complete; 4 starter difficulty files. New difficulty files will adopt deck_back/stake/voucher/etc. as those phases land.
 
 ### 2.5 Recording Infrastructure (`balatro_gym/wrappers/`)
 
@@ -90,6 +92,29 @@ starting_money: 8
 | `EpisodeStatsRecorder` | Parquet (streaming append) | 23 columns: won, blinds_beaten, total_steps, reward, scores, action counts, etc. |
 
 **Status**: Complete.
+
+### 2.6 Simulation Coverage vs Full Balatro
+
+The simulation engine targets a faithful port of all non-cosmetic Balatro mechanics. Audio, animation, particles, and UI are explicitly out of scope.
+
+| System | Implemented | Full game | Gap |
+|---|---:|---:|---|
+| Jokers | 30 | 150 | 120 to add (Phase 2a) |
+| Planets | 12 | 12 | ✅ |
+| Tarots | 22 | 22 | ✅ |
+| Spectrals | 10 | 18 | 8 to add (Phase 2b) |
+| Enhancements | 8 | 8 | ✅ |
+| Seals | 4 | 4 | ✅ |
+| Editions | 3 | 4 | + Negative (Phase 1c) |
+| Boss blinds | 9 | 30 | 21 to add (Phase 2c) |
+| Deck backs | 5 | 15 | 10 to add (Phase 1a bulk-fill) |
+| Stakes | 5 | 8 | 3 to add (Phase 1b bulk-fill, after joker stickers exist) |
+| Vouchers | 0 | 32 | All (Phase 1d) |
+| Tags | 0 | 24 | All (Phase 1e) |
+| Booster packs | 0 | 5 kinds | All (Phase 1f) |
+| Challenges | 0 | 20 | **Out of scope** — orthogonal to normal runs |
+
+**Per-registry policy**: new subsystems land as "scaffolding + 5 starter examples" (validates the design across different effect kinds), then bulk-fill the remaining content later.
 
 ---
 
@@ -233,7 +258,47 @@ All evaluation runs are recorded via `EpisodeStatsRecorder` to Parquet files for
 
 ## 6. Implementation Roadmap
 
-### Phase A: RL Training (Current Priority)
+The project has two parallel tracks: **6.1** expands the simulation engine toward full-game parity (long-term build); **6.2** trains and evaluates agents on whatever the engine currently supports. Agent work is currently done on easy mode and is not blocked by the buildout.
+
+### 6.1 Simulation Engine Buildout
+
+Goal: a simulation engine that fully reflects Balatro, with the plug-in difficulty system choosing what subset each run exposes.
+
+**Sequencing principle**: cross-cutting subsystems land before bulk content. Adding a joker is a one-file edit; adding vouchers/tags/booster packs requires shop and action-space changes. Lay the bones first, then load content.
+
+**Per-registry policy**: each new subsystem ships as **scaffolding + 5 starter examples** (one example per distinct effect kind, to validate the design), then bulk-fills the rest in a later turn.
+
+| Phase | What lands | Cross-cuts existing code | Status |
+|---|---|---|---|
+| 1a | Deck backs (15 variants — registry + 5 starters) | starting state, economy | ✅ done — Red, Blue, Yellow, Black, Green |
+| 1b | Stakes (8 tiers — registry + 5 starters) | blind score scaling, economy, starting discards | ✅ done — White, Red, Green, Blue, Purple |
+| 1c | Negative edition + shop edition rolls | Edition enum, joker slot accounting | next |
+| 1d | Vouchers (32 — registry + 5 starters) + voucher shop slot | shop, economy hooks | planned |
+| 1e | Tags (24 — registry + 5 starters) + skip-blind action | blind flow, action space | planned |
+| 1f | Booster packs (5 kinds) + pick-from-pool flow | shop, new action phase | planned |
+| 2a | +120 jokers (pure data, no engine changes) | none | planned |
+| 2b | +8 spectrals | none | planned |
+| 2c | +21 boss blinds | none | planned |
+| 2d | Bulk-fill remaining decks (10) | none | planned |
+| 2e | Bulk-fill remaining stakes (Black/Orange/Gold — needs joker stickers) | joker.py (eternal/perishable/rental flags) | planned |
+| 3 | `difficulty/hard.py` enables everything | difficulty file | trivial; lands with each phase |
+
+**Out of scope**: Challenges (20 — orthogonal to normal runs).
+
+**Architectural commitments**:
+- All five missing subsystems become new registry modules (`back.py` ✅, `stake.py` ✅, `voucher.py`, `tag.py`, `booster.py`) under `balatro_gym/core/`, following the existing `joker.py`/`consumable.py` decorator pattern.
+- `GameConfig` grows optional fields with defaults that match today's behavior — existing difficulty configs unaffected.
+- Action space grows from 446 → ~520 across Phases 1d–1f. Action masking handles cleanly.
+- No re-architecting of existing core. `BaseJoker` already has all hooks for the missing 120 jokers; no protocol changes.
+- `hard.py` becomes "set every pool to the full registry, set stake_level=8, enable all packs" once all phases land.
+
+**What is being redesigned**:
+- The shop. Today it offers (joker, joker, consumable). After Phase 1d/1f it offers (joker × N, consumable × M, voucher × 1, booster pack × 2). Generalizes `shop.py`.
+- `step()` and the action space layout. Today: play/discard + buy/sell/reroll/skip. Adding skip-blind + open-booster-pack adds two new action phases.
+
+### 6.2 Agent Experiment Roadmap
+
+#### Phase A: RL Training (Current Priority)
 
 ```
 A1. Run PPO on easy mode (200 iterations, DefaultReward)
@@ -252,7 +317,7 @@ A5. Evaluate best PPO checkpoint on all difficulties
     → Produce cross-difficulty comparison table
 ```
 
-### Phase B: LLM Agent
+#### Phase B: LLM Agent
 
 ```
 B1. Implement HuggingFaceBackend
@@ -272,7 +337,7 @@ B5. (Optional) Generate expert trajectories with HeuristicAgent
     → Evaluate fine-tuned model
 ```
 
-### Phase C: Evaluation & Analysis
+#### Phase C: Evaluation & Analysis
 
 ```
 C1. Run all agents on standardized 100-seed evaluation set

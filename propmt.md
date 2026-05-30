@@ -1,0 +1,1 @@
+The environment run successfully. Now I want to revise the difficulty modes of current gym, i.e. easy, medium, hard.

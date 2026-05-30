@@ -103,19 +103,15 @@ def make_balatro_env(config: dict[str, Any]) -> BalatroRLlibEnv:
     """
     game_config = config.get("game_config")
     if game_config is None:
+        from balatro_gym.difficulty import get_difficulty, list_difficulties
         difficulty = config.get("difficulty", "medium")
         seed = config.get("seed")
-        factory = {
-            "easy": GameConfig.easy,
-            "medium": GameConfig.medium,
-            "hard": GameConfig.hard,
-        }
-        if difficulty not in factory:
+        if difficulty not in list_difficulties():
             raise ValueError(
                 f"Unknown difficulty {difficulty!r}. "
-                f"Choose from: {list(factory)}"
+                f"Choose from: {list_difficulties()}"
             )
-        game_config = factory[difficulty](seed=seed)
+        game_config = get_difficulty(difficulty, seed=seed)
 
     inner_env = BalatroEnv(config=game_config)
     return BalatroRLlibEnv(inner_env)

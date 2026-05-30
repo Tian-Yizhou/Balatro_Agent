@@ -29,7 +29,7 @@ from ray.rllib.algorithms.ppo import PPOConfig
 from ray.rllib.core.rl_module.rl_module import RLModuleSpec
 
 from balatro_gym.envs.balatro_env import TOTAL_ACTIONS
-from balatro_gym.envs.configs import GameConfig
+from balatro_gym.difficulty import list_difficulties
 from agent.rllib.action_mask_model import ActionMaskingTorchRLModule
 from agent.rllib.env_wrapper import BalatroRLlibEnv, make_balatro_env
 
@@ -54,9 +54,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     p.add_argument(
         "--difficulty",
-        choices=["easy", "medium", "hard"],
+        choices=list_difficulties(),
         default="easy",
-        help="Game difficulty preset.",
+        help="Game difficulty preset (any file in balatro_gym/difficulty/).",
     )
     p.add_argument(
         "--seed",
@@ -134,8 +134,8 @@ def evaluate(args: argparse.Namespace) -> dict:
     algo.restore(args.checkpoint)
 
     # Run episodes locally for detailed per-episode stats
-    factory = {"easy": GameConfig.easy, "medium": GameConfig.medium, "hard": GameConfig.hard}
-    game_config = factory[args.difficulty](seed=args.seed)
+    from balatro_gym.difficulty import get_difficulty
+    game_config = get_difficulty(args.difficulty, seed=args.seed)
 
     from balatro_gym.envs.balatro_env import BalatroEnv
     inner_env = BalatroEnv(config=game_config)

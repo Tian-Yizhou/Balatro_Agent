@@ -212,3 +212,6 @@ __marimo__/
 Balatro/resources/
 .DS_Store
 quest_run/
+checkpoints/
+last_run_result/
+wandb/

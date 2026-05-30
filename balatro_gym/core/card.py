@@ -53,10 +53,23 @@ class Enhancement(enum.Enum):
 
 
 class Edition(enum.Enum):
-    """Card editions (Lua: G.P_CENTERS e_* entries)."""
+    """Card / Joker editions (Lua: G.P_CENTERS e_* entries).
+
+    All four are joker-legal. Only the first three are legal on playing
+    cards (see ``PLAYING_CARD_EDITIONS``). Negative grants +1 joker slot
+    (or +1 consumable slot when applied to a consumable) — it has no
+    chip/mult bonus during scoring.
+    """
     FOIL = "e_foil"             # +50 chips
     HOLO = "e_holo"             # +10 mult
     POLYCHROME = "e_polychrome" # X1.5 mult
+    NEGATIVE = "e_negative"     # +1 slot (joker or consumable); no scoring effect
+
+
+# Editions that can appear on playing cards (Lua restricts Negative to joker/consumable).
+PLAYING_CARD_EDITIONS: tuple[Edition, ...] = (
+    Edition.FOIL, Edition.HOLO, Edition.POLYCHROME,
+)
 
 
 class Seal(enum.Enum):
@@ -84,7 +97,33 @@ EDITION_CONFIG: dict[Edition, dict] = {
     Edition.FOIL:       {"chips": 50},
     Edition.HOLO:       {"mult": 10},
     Edition.POLYCHROME: {"x_mult": 1.5},
+    Edition.NEGATIVE:   {},                       # no scoring effect
 }
+
+# Shop cost bumps when this edition is on a joker/consumable
+# (matching Lua card.lua:372-373).
+EDITION_COST_BONUS: dict[Edition, int] = {
+    Edition.FOIL:       2,
+    Edition.HOLO:       3,
+    Edition.POLYCHROME: 5,
+    Edition.NEGATIVE:   5,
+}
+
+
+def edition_scoring_bonus(edition: Edition | None) -> tuple[int, int, float]:
+    """Return (chips, mult, x_mult) scoring bonus for an edition.
+
+    Used during the joker main scoring loop. ``None`` (no edition) and
+    Negative both return zeros.
+    """
+    if edition is None:
+        return (0, 0, 0.0)
+    cfg = EDITION_CONFIG[edition]
+    return (
+        int(cfg.get("chips", 0)),
+        int(cfg.get("mult", 0)),
+        float(cfg.get("x_mult", 0.0)),
+    )
 
 
 SUIT_SYMBOLS: dict[Suit, str] = {

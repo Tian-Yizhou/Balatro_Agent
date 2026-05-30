@@ -20,7 +20,8 @@ import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
 
-from balatro_gym.core.card import Enhancement, Edition, Seal
+from balatro_gym.core.blind import BlindType
+from balatro_gym.core.card import Enhancement, Edition, Seal, PLAYING_CARD_EDITIONS
 from balatro_gym.core.game_state import GamePhase, GameState
 from balatro_gym.core.joker import get_all_joker_ids
 from balatro_gym.core.consumable import get_all_consumable_ids, ConsumableType
@@ -40,24 +41,31 @@ for _size in range(1, 6):
 
 NUM_PLAY_ACTIONS = len(CARD_SUBSETS)       # 218
 NUM_DISCARD_ACTIONS = len(CARD_SUBSETS)    # 218
-NUM_BUY_ACTIONS = 3                        # shop slot 0, 1 (jokers) + 1 (consumable)
+# Shop slots covered by buy actions: 2 jokers + 1 voucher + 1 consumable = 4.
+# (Configs without a voucher pool simply leave the voucher slot un-buyable
+# via the action mask.)
+NUM_BUY_ACTIONS = 4
 NUM_SELL_ACTIONS = 5                       # joker slot 0-4
 NUM_REROLL = 1
 NUM_SKIP = 1
+NUM_SKIP_BLIND = 1                         # PLAY phase, Small/Big only
 
 PLAY_OFFSET = 0                                        # 0-217
 DISCARD_OFFSET = NUM_PLAY_ACTIONS                      # 218-435
-BUY_OFFSET = DISCARD_OFFSET + NUM_DISCARD_ACTIONS      # 436-438
-SELL_OFFSET = BUY_OFFSET + NUM_BUY_ACTIONS             # 439-443
-REROLL_ACTION = SELL_OFFSET + NUM_SELL_ACTIONS          # 444
-SKIP_ACTION = REROLL_ACTION + NUM_REROLL                # 445
+BUY_OFFSET = DISCARD_OFFSET + NUM_DISCARD_ACTIONS      # 436-439
+SELL_OFFSET = BUY_OFFSET + NUM_BUY_ACTIONS             # 440-444
+REROLL_ACTION = SELL_OFFSET + NUM_SELL_ACTIONS         # 445
+SKIP_ACTION = REROLL_ACTION + NUM_REROLL               # 446
+SKIP_BLIND_ACTION = SKIP_ACTION + NUM_SKIP             # 447
 
-TOTAL_ACTIONS = SKIP_ACTION + NUM_SKIP                  # 446
+TOTAL_ACTIONS = SKIP_BLIND_ACTION + NUM_SKIP_BLIND     # 448
 
-# Card property counts for observation encoding
-NUM_ENHANCEMENTS = len(Enhancement)    # 8
-NUM_EDITIONS = len(Edition)            # 3
-NUM_SEALS = len(Seal)                  # 4
+# Card property counts for observation encoding. Playing cards only encode
+# the 3 card-legal editions (Foil/Holo/Polychrome) — Negative is joker/consumable
+# only and would be a wasted slot here.
+NUM_ENHANCEMENTS = len(Enhancement)               # 8
+NUM_EDITIONS = len(PLAYING_CARD_EDITIONS)         # 3
+NUM_SEALS = len(Seal)                             # 4
 
 # Per-card feature size: 52 (which card) + 8 (enhancement) + 3 (edition) + 4 (seal) + 1 (face_down)
 CARD_FEATURE_DIM = 52 + NUM_ENHANCEMENTS + NUM_EDITIONS + NUM_SEALS + 1  # 68
@@ -108,14 +116,15 @@ class BalatroEnv(gym.Env):
             self.config = config
         elif config_path is not None:
             self.config = GameConfig.from_file(config_path)
-        elif config_preset == "easy":
-            self.config = GameConfig.easy()
-        elif config_preset == "hard":
-            self.config = GameConfig.hard()
-        elif config_preset == "medium" or config_preset is None:
-            self.config = GameConfig.medium()
         else:
-            raise ValueError(f"Unknown config preset: {config_preset!r}")
+            from balatro_gym.difficulty import get_difficulty
+            preset = config_preset if config_preset is not None else "medium"
+            try:
+                self.config = get_difficulty(preset)
+            except ValueError as exc:
+                # Re-raise with the legacy "Unknown config preset" message
+                # so existing callers / tests still match.
+                raise ValueError(f"Unknown config preset: {preset!r}") from exc
 
         self.render_mode = render_mode
         self.reward_fn: RewardFunction = reward_fn or DefaultReward()
@@ -219,19 +228,39 @@ class BalatroEnv(gym.Env):
             game_seed = int(self.np_random.integers(0, 2**31))
         else:
             game_seed = self.config.seed
+        # Static starting-state modifiers from deck-back and stake stack additively.
+        back_mods = None
+        if self.config.deck_back is not None:
+            from balatro_gym.core.back import get_back_class
+            back_mods = get_back_class(self.config.deck_back).MODIFIERS
+
+        from balatro_gym.core.stake import get_stake_class
+        stake_mods = get_stake_class(self.config.stake).MODIFIERS
+
+        def _back_delta(field: str) -> int:
+            return getattr(back_mods, field) if back_mods is not None else 0
+
         self._game = GameState(
             num_antes=self.config.num_antes,
-            hands_per_round=self.config.hands_per_round,
-            discards_per_round=self.config.discards_per_round,
-            hand_size=self.config.hand_size,
-            max_jokers=self.config.max_jokers,
-            starting_money=self.config.starting_money,
+            hands_per_round=self.config.hands_per_round + _back_delta("hands_per_round_delta"),
+            discards_per_round=(
+                self.config.discards_per_round
+                + _back_delta("discards_per_round_delta")
+                + stake_mods.starting_discards_delta
+            ),
+            hand_size=self.config.hand_size + _back_delta("hand_size_delta"),
+            max_jokers=self.config.max_jokers + _back_delta("max_jokers_delta"),
+            starting_money=self.config.starting_money + _back_delta("starting_money_delta"),
             available_joker_ids=list(self.config.joker_pool),
             starting_joker_ids=list(self.config.starting_joker_ids),
             available_consumable_ids=list(self.config.consumable_pool),
+            available_voucher_ids=list(self.config.voucher_pool),
+            available_tag_ids=list(self.config.tag_pool),
             shop_slots=self.config.shop_slots,
-            reroll_base_cost=self.config.reroll_base_cost,
-            consumable_slots=self.config.consumable_slots,
+            reroll_base_cost=self.config.reroll_base_cost + _back_delta("reroll_base_cost_delta"),
+            consumable_slots=self.config.consumable_slots + _back_delta("consumable_slots_delta"),
+            back_id=self.config.deck_back,
+            stake_id=self.config.stake,
             seed=game_seed,
         )
         self._game.reset()
@@ -335,6 +364,14 @@ class BalatroEnv(gym.Env):
                     if can_discard:
                         mask[DISCARD_OFFSET + i] = True
 
+            # Skip-blind is available only on Small or Big blinds, and only
+            # when the run actually has a tag pool to draw from.
+            if (
+                self._game.available_tag_ids
+                and self._game.current_blind_type != BlindType.BOSS
+            ):
+                mask[SKIP_BLIND_ACTION] = True
+
         elif self._game.phase == GamePhase.SHOP:
             # Buy actions — iterate over all offerings
             for slot_idx in range(min(NUM_BUY_ACTIONS, len(self._game.shop.offerings))):
@@ -342,11 +379,14 @@ class BalatroEnv(gym.Env):
                 if offering.sold or self._game.money < offering.cost:
                     continue
                 if offering.item_type == "joker":
-                    if len(self._game.jokers) < self._game.max_jokers:
+                    if len(self._game.jokers) < self._game.effective_max_jokers:
                         mask[BUY_OFFSET + slot_idx] = True
                 elif offering.item_type == "consumable":
-                    if len(self._game.consumables) < self._game.consumable_slots:
+                    if len(self._game.consumables) < self._game.effective_consumable_slots:
                         mask[BUY_OFFSET + slot_idx] = True
+                elif offering.item_type == "voucher":
+                    # Vouchers have no slot limit — only the money check matters.
+                    mask[BUY_OFFSET + slot_idx] = True
 
             # Sell actions
             for joker_idx in range(min(NUM_SELL_ACTIONS, len(self._game.jokers))):
@@ -412,15 +452,20 @@ class BalatroEnv(gym.Env):
             self._game.shop_skip()
             return True
 
+        elif action == SKIP_BLIND_ACTION:
+            self._game.skip_blind()
+            return True
+
         return False
 
     # -------------------------------------------------------------------
     # Observation encoding
     # -------------------------------------------------------------------
 
-    # Pre-build lookup dicts for fast encoding
+    # Pre-build lookup dicts for fast encoding. Playing-card editions exclude
+    # Negative (joker/consumable only), so this dict spans 3 entries.
     _ENHANCEMENT_IDX: dict[Enhancement, int] = {e: i for i, e in enumerate(Enhancement)}
-    _EDITION_IDX: dict[Edition, int] = {e: i for i, e in enumerate(Edition)}
+    _EDITION_IDX: dict[Edition, int] = {e: i for i, e in enumerate(PLAYING_CARD_EDITIONS)}
     _SEAL_IDX: dict[Seal, int] = {s: i for i, s in enumerate(Seal)}
 
     def _encode_observation(self) -> np.ndarray:
@@ -443,8 +488,8 @@ class BalatroEnv(gym.Env):
                 if card.enhancement is not None:
                     enh_idx = self._ENHANCEMENT_IDX[card.enhancement]
                     obs[offset + 52 + enh_idx] = 1.0
-                # Edition (3-dim one-hot)
-                if card.edition is not None:
+                # Edition (3-dim one-hot, Negative not legal on cards so skipped)
+                if card.edition is not None and card.edition in self._EDITION_IDX:
                     ed_idx = self._EDITION_IDX[card.edition]
                     obs[offset + 52 + NUM_ENHANCEMENTS + ed_idx] = 1.0
                 # Seal (4-dim one-hot)
