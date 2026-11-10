@@ -61,7 +61,7 @@ like Lucky.
 | D15 | Tooling: `uv` for Python, Python 3.11 or newer; `rustup` + `maturin` if Rust is added later (§10.6). | decided |
 | D16 | The Lua source stays on the owner's machine only, ignored through `.git/info/exclude`. It has been removed from the public repo's entire history (§10.1). | done 2026-11-10 |
 
-During M0 each decision is written up as a short ADR in `docs/adr/`.
+The ADR index (`docs/adr/README.md`) lists these decisions. Later decisions get their own ADRs.
 
 ---
 
@@ -500,7 +500,7 @@ Applied in M0 through the GitHub API:
 
 | # | Milestone | Done when |
 |---|---|---|
-| **M0** | Repo refactor and development rules (§10): layout, `pyproject`, tooling, `.github/`, CONTRIBUTING, CLAUDE.md, ADRs for D1–D9, legacy removed, Lua untracked | CI is green on the empty skeleton; branch protection is on; merged to `main` |
+| **M0** | Repo refactor and development rules (§10): layout, `pyproject`, tooling, `.github/`, CONTRIBUTING, CLAUDE.md, ADR index, legacy removed, Lua untracked | CI is green on the empty skeleton; branch protection is on; merged to `main` |
 | **M1** | Engine foundations: state model, keyed RNG, snapshot/restore, events, the atomic and macro action framework, replay format, recorder and text renderer, Lua harness | Snapshots round-trip; replays are deterministic; Lua differential tests pass for hand evaluation and blind amounts |
 | **M2** | Core loop with plain cards: blind select, round, the scoring pipeline with full context dispatch, cash out, a weighted shop (jokers, tarots, planets), game over, win, endless | Random agents finish full games; **throughput benchmark → Python/Rust checkpoint** |
 | **M3** | Card modifiers, consumables, packs and the pack phase, vouchers, tags with skipping, all bosses, decks, stakes and stickers | Scenario tests for every item |
