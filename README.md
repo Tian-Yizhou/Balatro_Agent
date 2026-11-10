@@ -1,46 +1,48 @@
 # Balatro-Agent
 
-An RL agent that learns to play the roguelite deck-building game Balatro.
+A rules-accurate simulator of the deck-building game Balatro, built as a research
+environment for AI agents: reinforcement learning, LLM agents and search.
 
-## Introduction
+> **v2 is under active development.** The design, decisions and roadmap are in
+> [docs/REFACTOR_PLAN.md](docs/REFACTOR_PLAN.md). The previous implementation is
+> preserved at tag [`v1-legacy`](../../tree/v1-legacy).
 
-This project has two parts:
+## Goals
 
-1. **Balatro-Gym** -- A Gymnasium-compatible simulation engine that recreates Balatro's game mechanics in Python. It serves as a reasoning gym for training and evaluating AI agents on strategic decision-making: probability estimation, expected value calculation, combinatorial optimization, and long-horizon planning.
+- **Faithful rules:** the full game as of version 1.0.1o, including jokers, consumables,
+  vouchers, tags, boss blinds, decks, stakes, endless mode and unlock progression.
+- **Scale:** many games run in parallel across processes and nodes.
+- **Inspectable:** every game can be restored and replayed step by step.
 
-2. **Balatro-Agent** -- An RL agent trained via PPO (Proximal Policy Optimization) with action masking to play the game, learning strategies that go beyond hand-crafted heuristics.
+## Layout
 
-### Project Status
+| Path | Contents |
+|---|---|
+| `src/balatro_gym/sim` | Pure, deterministic rules engine |
+| `src/balatro_gym/replay` | Replay recording, loading and re-simulation |
+| `src/balatro_gym/env` | Agent-facing environment (Gymnasium) |
+| `src/balatro_gym/serve` | Game dispatcher and remote step server |
+| `tests/` | Test suite |
+| `docs/` | Plan and architecture decision records |
 
-| Component | Status |
-|-----------|--------|
-| Core game engine (cards, hand evaluation, jokers, blinds, shop, game state) | In progress |
-| Gymnasium environment wrapper (observation encoding, action masking) | In progress |
-| Difficulty configs (easy/medium/hard YAML presets) | In progress |
-| Baseline agents (random, heuristic) | Waiting |
-| PPO training pipeline (MaskablePPO via SB3) | Waiting |
-| Curriculum learning (easy -> hard) | Waiting |
-| Evaluation and ablation experiments | Waiting |
+## Development
 
-### About Balatro
+Requires [uv](https://docs.astral.sh/uv/).
 
-[Balatro](https://www.playbalatro.com/) is a single-player roguelite where you score points by playing poker hands -- but with a twist. You collect **Jokers** (modifier cards) that warp the scoring rules, and you must build synergies between your Jokers and your deck to hit exponentially growing score targets.
+```bash
+uv sync                      # create the environment
+uv run pytest                # tests
+uv run ruff check            # lint
+uv run ruff format --check   # formatting
+uv run pyright               # type check
+uv run pre-commit install    # optional: lint and format on every commit
+```
 
-**Why is Balatro a good environment for agent planning research?**
+## Contributing
 
-Consider a state where your current hand cannot satisfy the score requirement, and you have one discard remaining. The agent faces a high-dimensional planning problem:
+Branch, commit and pull request rules are in [CONTRIBUTING.md](CONTRIBUTING.md).
 
-- **Option A (The Safe Play):** Discard for a **Flush**. Your current Jokers provide a mult boost that guarantees current round win immediately. This ensures survival but offers zero long-term growth.
-- **Option B (The Scaling Play):** Discard for a **Straight**. While this hand won't win the round in one go, you have a "Scaling Joker" (like *Square Joker* or *Bus*) that permanently increases its power whenever a Straight is played.
+## License
 
-**Reasoning and Planning:** An agent must evaluate if its current health (hands remaining) and deck probability allow it to take the "suboptimal" short-term play (the Straight) to ensure its "scaling" is high enough to survive the exponential difficulty of later Antes. This requires the model to value **future state utility** over **immediate reward.**
-
-## Tech Stack
-
-- Python 3.12+
-- `gymnasium` -- environment API
-- `stable-baselines3` + `sb3-contrib` -- PPO with action masking
-- `numpy` -- numerical computation
-- `pytest` -- testing
-- `pyyaml` -- config loading
-- `tensorboard` or `wandb` -- experiment tracking (optional)
+[MIT](LICENSE). This project is not affiliated with or endorsed by LocalThunk or
+Playstack, and it contains no code, art, audio or text from Balatro.
