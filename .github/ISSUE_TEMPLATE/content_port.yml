@@ -1,0 +1,40 @@
+name: Content port
+description: Port one game item (joker, consumable, voucher, tag, blind, deck, stake).
+title: "Port <kind>: <item name>"
+labels: ["type/content"]
+body:
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Kind
+      options: [Joker, Tarot, Planet, Spectral, Voucher, Tag, Boss blind, Deck, Stake, Booster pack, Other]
+    validations:
+      required: true
+  - type: input
+    id: key
+    attributes:
+      label: Item key
+      description: The key used in the original game, e.g. j_blueprint.
+    validations:
+      required: true
+  - type: input
+    id: source
+    attributes:
+      label: Source reference
+      description: File and function in the original game, e.g. card.lua Card:calculate_joker.
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Behavior
+      description: The rules in your own words, including when the effect triggers.
+    validations:
+      required: true
+  - type: textarea
+    id: tests
+    attributes:
+      label: Test cases
+      description: Concrete states and the expected score, money or side effects.
+    validations:
+      required: true

@@ -1,0 +1,32 @@
+name: Bug report
+description: The simulator or environment behaves incorrectly.
+labels: ["type/bug"]
+body:
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happens
+      description: The incorrect behavior, with error output if any.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What should happen
+      description: The correct behavior, with the source location in the original game if known.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce
+      description: Attach a replay or snapshot file, or give a minimal script.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Package version or commit hash.
+    validations:
+      required: true

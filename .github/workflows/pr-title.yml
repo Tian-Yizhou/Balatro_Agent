@@ -1,0 +1,28 @@
+name: PR title
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions: {}
+
+jobs:
+  conventional-title:
+    name: Conventional Commits title
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check title format
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          types='feat|fix|perf|refactor|test|docs|build|ci|chore|revert'
+          scopes='sim|replay|env|serve|agents|tools|github|repo|deps'
+          pattern="^(${types})\((${scopes})\)!?: [a-z].*[^.]$"
+          if [[ ! "$TITLE" =~ $pattern ]]; then
+            echo "::error::Title must match '<type>(<scope>): <subject>' (see CONTRIBUTING.md §3)."
+            exit 1
+          fi
+          if (( ${#TITLE} > 72 )); then
+            echo "::error::Title is ${#TITLE} characters; the limit is 72."
+            exit 1
+          fi

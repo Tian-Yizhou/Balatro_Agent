@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  repo-guards:
+    name: Repository guards
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Reject tracked game source files
+        run: |
+          files=$(git ls-files '*.lua')
+          if [[ -n "$files" ]]; then
+            echo "::error::Tracked .lua files are not allowed:"
+            echo "$files"
+            exit 1
+          fi
