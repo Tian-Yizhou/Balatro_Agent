@@ -21,12 +21,27 @@ precisely and briefly. Nothing else.
 
 ## 2. Branches
 
+### 2.1 When to open a branch
+
+Opening a branch is an engineering judgment. A branch holds one **coherent change**:
+a piece of work that makes sense to review, test and merge as a whole.
+
+- Related small tasks can share a branch, for example several jokers with the same
+  mechanism.
+- Unrelated changes go on separate branches, so each PR stays focused.
+- Large work is split into a series of branches that each leave `main` working.
+- New work starts on a new branch from `main`. A branch is never reused after it
+  has been merged.
+- There is no long-lived integration branch: `main` is always releasable, and
+  tags mark stable snapshots.
+
+### 2.2 Naming and upkeep
+
 Format: `<type>/<short-description>`
 
-- `<type>` is one of the commit types in §3.2.
+- `<type>` is the commit type (§3.2) that best describes the branch as a whole.
 - `<short-description>` is 2–5 lowercase words joined by hyphens.
 - Examples: `feat/sim-scoring-pipeline`, `fix/shop-reroll-cost`, `docs/adr-rng`.
-- One topic per branch. Branches should live for days, not weeks.
 - To catch up with `main`, rebase onto it. After rebasing a pushed branch, push with
   `git push --force-with-lease`.
 
