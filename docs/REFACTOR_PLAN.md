@@ -442,7 +442,9 @@ README.md · CONTRIBUTING.md · CLAUDE.md · CHANGELOG.md · LICENSE
   - On 2026-11-10 it was removed from every commit of the public repo with
     `git filter-repo`, and all branches were force-pushed.
   - **Guard:** CI fails if any `.lua` file is tracked outside an allow-listed
-    directory. The allow-list is empty until the real-game bridge (§9) needs one.
+    directory. The allow-list holds only `tools/lua_harness/`, whose Lua files are
+    our own stand-ins for the game's UI (no game code); the real-game bridge (§9)
+    may add its own directory.
 
 ### 10.2 Branches (D13)
 - **Two paths to `main`** (`CONTRIBUTING.md` §1): significant changes arrive through a

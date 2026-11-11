@@ -20,9 +20,11 @@ jobs:
       - uses: actions/checkout@v7
       - name: Reject tracked game source files
         run: |
-          files=$(git ls-files '*.lua')
+          # Our own Lua code may live only in these directories.
+          allowed='^tools/lua_harness/'
+          files=$(git ls-files '*.lua' | grep -Ev "$allowed" || true)
           if [[ -n "$files" ]]; then
-            echo "::error::Tracked .lua files are not allowed:"
+            echo "::error::Tracked .lua files are not allowed outside the allow-list:"
             echo "$files"
             exit 1
           fi
