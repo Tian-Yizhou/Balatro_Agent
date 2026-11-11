@@ -7,7 +7,7 @@ GAME_VERSION = "1.0.1o"
 
 #: Bumped whenever the engine's game behavior changes. A replay recorded under a
 #: different rules version may no longer re-simulate to the same states.
-RULES_VERSION = 2
+RULES_VERSION = 3
 
 #: Bumped whenever the layout of the serialized state changes.
-STATE_SCHEMA_VERSION = 2
+STATE_SCHEMA_VERSION = 3

@@ -62,6 +62,12 @@ class ContextKind(StrEnum):
     PRE_DISCARD = "pre_discard"
     DISCARD = "discard"
     END_OF_ROUND = "end_of_round"
+    BUYING_CARD = "buying_card"
+    SELLING_SELF = "selling_self"
+    SELLING_CARD = "selling_card"
+    REROLL_SHOP = "reroll_shop"
+    ENDING_SHOP = "ending_shop"
+    USING_CONSUMABLE = "using_consumeable"
 
 
 class Area(StrEnum):
@@ -96,6 +102,8 @@ class Context:
     end_of_round: bool = False
     game_over: bool = False
     removed: Sequence[PlayingCard] = ()
+    #: The card bought or sold (``context.card``), or the consumable used.
+    card: Item | None = None
     blueprint: int = 0
     blueprint_card: Item | None = None
 

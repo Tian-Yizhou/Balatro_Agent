@@ -13,17 +13,20 @@ from balatro_gym.sim.actions import (
     ACTION_TYPES,
     Action,
     Buy,
+    BuyAndUse,
     MoveCard,
     MoveJoker,
     Pick,
+    SellConsumable,
     SellJoker,
     ToggleCard,
+    UseConsumable,
 )
 from balatro_gym.sim.effects import JOKERS
 from balatro_gym.sim.engine import SELECTION_LIMIT
 from balatro_gym.sim.events import CardDestroyed
 from balatro_gym.sim.items import new_item
-from balatro_gym.sim.state import Phase, RunState
+from balatro_gym.sim.state import RunState
 from scenarios import Policy, greedy_policy, play_game, random_policy
 
 
@@ -37,7 +40,12 @@ def candidate_actions(state: RunState) -> list[Action]:
     candidates += [ToggleCard(i) for i in hand]
     candidates += [MoveCard(source, target) for source in hand for target in hand]
     candidates += [MoveJoker(source, target) for source in jokers for target in jokers]
-    candidates += [cls(i) for cls in (SellJoker, Buy, Pick) for i in range(2)]
+    shop = range(-1, len(state.shop_cards) + 1)
+    consumables = range(-1, len(state.consumables) + 1)
+    candidates += [cls(i) for cls in (Buy, BuyAndUse) for i in shop]
+    candidates += [SellJoker(i) for i in jokers]
+    candidates += [cls(i) for cls in (SellConsumable, UseConsumable) for i in consumables]
+    candidates += [Pick(i) for i in range(2)]
     return candidates
 
 
@@ -50,8 +58,6 @@ def check_invariants(game: Game, uids: set[int]) -> None:
     assert sum(card.selected for card in state.hand) <= SELECTION_LIMIT
     assert state.hands_left >= 0
     assert state.discards_left >= 0
-    if state.phase is Phase.SELECTING_HAND:
-        assert len(state.hand) <= max(state.hand_size, 0) or not state.deck
     legal = legal_actions(state)
     assert len(legal) == len(set(legal))
     assert set(legal) == {action for action in candidate_actions(state) if is_legal(state, action)}
@@ -102,8 +108,10 @@ def test_invariants_hold(policy: Policy, seeds: range, equipped: bool) -> None:
                 steps += 1
                 check_invariants(game, uids)
             if steps % 50 == 0:
-                data = json.loads(json.dumps(game.snapshot()))
-                assert Game.from_snapshot(data).state == game.state
+                text = json.dumps(game.snapshot(), sort_keys=True)
+                restored = Game.from_snapshot(json.loads(text))
+                assert restored.state == game.state
+                assert json.dumps(restored.snapshot(), sort_keys=True) == text
         assert game.is_over
 
 

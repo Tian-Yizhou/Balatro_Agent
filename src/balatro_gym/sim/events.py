@@ -24,18 +24,23 @@ __all__ = [
     "CardToggled",
     "CardsDiscarded",
     "CardsDrawn",
+    "ConsumableUsed",
     "EffectApplied",
     "Event",
     "HandLevelChanged",
     "HandPlayed",
     "HandScored",
     "HandSorted",
+    "ItemBought",
+    "ItemCreated",
+    "ItemSold",
     "JokerDestroyed",
     "JokerMoved",
     "MoneyChanged",
     "PhaseChanged",
     "RoundEnded",
     "RunEnded",
+    "ShopRerolled",
     "event_to_data",
 ]
 
@@ -209,10 +214,53 @@ class MoneyChanged(Event):
 
 @dataclass(frozen=True, slots=True)
 class RunEnded(Event):
+    """The run is over. ``reason`` is ``"lost"``, ``"won"`` or ``"max_ante"``."""
+
     kind: ClassVar[str] = "run_ended"
     won: bool
     ante: int
     round: int
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class ItemBought(Event):
+    kind: ClassVar[str] = "item_bought"
+    uid: int
+    key: str
+    cost: int
+
+
+@dataclass(frozen=True, slots=True)
+class ItemSold(Event):
+    kind: ClassVar[str] = "item_sold"
+    uid: int
+    key: str
+    value: int
+
+
+@dataclass(frozen=True, slots=True)
+class ItemCreated(Event):
+    """A joker or consumable appeared: in the shop or among the player's items."""
+
+    kind: ClassVar[str] = "item_created"
+    uid: int
+    key: str
+    area: str
+
+
+@dataclass(frozen=True, slots=True)
+class ConsumableUsed(Event):
+    kind: ClassVar[str] = "consumable_used"
+    uid: int
+    key: str
+    targets: tuple[int, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ShopRerolled(Event):
+    kind: ClassVar[str] = "shop_rerolled"
+    cost: int
 
 
 #: Every concrete event type, by ``kind``.
@@ -239,6 +287,11 @@ EVENT_TYPES: dict[str, type[Event]] = {
         AnteChanged,
         MoneyChanged,
         RunEnded,
+        ItemBought,
+        ItemSold,
+        ItemCreated,
+        ConsumableUsed,
+        ShopRerolled,
     )
 }
 

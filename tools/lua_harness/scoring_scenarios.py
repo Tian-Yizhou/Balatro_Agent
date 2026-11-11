@@ -80,6 +80,7 @@ def random_scoring_scenarios(
             "hands_left": randomizer.randint(0, 3),
             "discards_left": randomizer.randint(0, 3),
             "probability": randomizer.choice((0, 1000)),
+            "tarots_used": randomizer.choice((0, 0, 1, 4)),
         }
 
 
