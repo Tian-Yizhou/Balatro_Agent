@@ -31,8 +31,9 @@ from .effects import (
     register_joker,
     value,
 )
+from .items import set_cost
 from .scope import Scope
-from .state import Item
+from .state import BlindSlot, Item
 
 __all__ = ["DOLLAR_BONUS"]
 
@@ -450,3 +451,70 @@ def _brainstorm(scope: Scope, joker: Item, context: Context) -> Effect | None:
     """Copies the effect of the leftmost joker."""
     jokers = scope.state.jokers
     return copy_joker(scope, joker, jokers[0] if jokers else None, context)
+
+
+# Jokers that react to the shop and to consumables.
+
+
+@register_joker("j_campfire")
+def _campfire(scope: Scope, joker: Item, context: Context) -> Effect | None:
+    """Gains x``extra`` (0.25) mult for each card sold; resets after a boss is beaten.
+    Its ``x_mult`` is applied by the shared main rule."""
+    if context.kind is ContextKind.SELLING_CARD and not context.blueprint:
+        joker.values["x_mult"] = value(joker, "x_mult", 1) + value(joker, "extra")
+        return None
+    boss = scope.state.blind is not None and scope.state.blind.slot is BlindSlot.BOSS
+    if context.kind is ContextKind.END_OF_ROUND and boss and value(joker, "x_mult", 1) > 1:
+        joker.values["x_mult"] = 1
+        return Effect()
+    return None
+
+
+@register_joker("j_flash")
+def _flash_card(scope: Scope, joker: Item, context: Context) -> Effect | None:
+    """Gains ``extra`` (2) mult each time the shop is rerolled; adds its ``mult``."""
+    if context.kind is ContextKind.REROLL_SHOP and not context.blueprint:
+        joker.values["mult"] = value(joker, "mult") + value(joker, "extra")
+    if context.kind is ContextKind.JOKER_MAIN and value(joker, "mult") > 0:
+        return Effect(mult=value(joker, "mult"))
+    return None
+
+
+@register_joker("j_constellation")
+def _constellation(scope: Scope, joker: Item, context: Context) -> Effect | None:
+    """Gains x``extra`` (0.1) mult each time a Planet card is used. Its ``x_mult`` is
+    applied by the shared main rule."""
+    used = context.card
+    is_planet = used is not None and CENTERS[used.key].set == "Planet"
+    if context.kind is ContextKind.USING_CONSUMABLE and not context.blueprint and is_planet:
+        joker.values["x_mult"] = value(joker, "x_mult", 1) + value(joker, "extra")
+    return None
+
+
+@register_joker("j_fortune_teller")
+def _fortune_teller(scope: Scope, joker: Item, context: Context) -> Effect | None:
+    """+``extra`` (1) mult for each Tarot card used this run."""
+    if context.kind is ContextKind.JOKER_MAIN:
+        usage = scope.state.consumable_usage
+        tarots = sum(count for key, count in usage.items() if CENTERS[key].set == "Tarot")
+        if tarots > 0:
+            return Effect(mult=tarots * value(joker, "extra"))
+    return None
+
+
+@register_joker("j_egg")
+def _egg(scope: Scope, joker: Item, context: Context) -> Effect | None:
+    """Its sell value grows by ``extra`` (3) dollars at the end of each round."""
+    if context.kind is ContextKind.END_OF_ROUND and not context.blueprint:
+        joker.values["extra_value"] = value(joker, "extra_value") + value(joker, "extra")
+        set_cost(scope.state, joker)
+        return Effect()
+    return None
+
+
+@register_joker("j_juggler", "j_drunkard", "j_credit_card", "j_chaos", "j_ring_master")
+def _while_owned(scope: Scope, joker: Item, context: Context) -> Effect | None:
+    """Juggler (+1 hand size), Drunkard (+1 discard), Credit Card (go up to $20 into
+    debt) and Chaos the Clown (one free reroll per shop) act while owned, through
+    ``inventory.add_to_deck``. Showman lets the shop offer items the player has."""
+    return None

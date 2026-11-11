@@ -19,17 +19,22 @@ from balatro_gym.sim.events import (
     CardsDiscarded,
     CardsDrawn,
     CardToggled,
+    ConsumableUsed,
     EffectApplied,
     HandLevelChanged,
     HandPlayed,
     HandScored,
     HandSorted,
+    ItemBought,
+    ItemCreated,
+    ItemSold,
     JokerDestroyed,
     JokerMoved,
     MoneyChanged,
     PhaseChanged,
     RoundEnded,
     RunEnded,
+    ShopRerolled,
 )
 from balatro_gym.sim.state import BlindSlot, BlindStatus, HandSort, PlayingCard
 
@@ -55,6 +60,9 @@ def render_state(state: RunState) -> str:
         lines.append("Jokers  " + " ".join(joker.key for joker in state.jokers))
     if state.consumables:
         lines.append("Items   " + " ".join(item.key for item in state.consumables))
+    if state.phase is Phase.SHOP:
+        offers = " · ".join(f"{item.key} ${item.cost}" for item in state.shop_cards)
+        lines.append(f"Shop    {offers or '(empty)'} · reroll ${state.reroll_cost}")
     if state.phase is Phase.ROUND_EVAL:
         rows = " + ".join(f"{payout.source} ${payout.dollars}" for payout in state.payouts)
         lines.append(f"Cash out  {rows} = ${sum(payout.dollars for payout in state.payouts)}")
@@ -227,6 +235,14 @@ _FORMATTERS: dict[type[Event], Callable[[Any, dict[int, str]], str]] = {
     AnteChanged: lambda event, _: f"Reached ante {event.ante}",
     MoneyChanged: _money,
     RunEnded: lambda event, _: (
-        f"Run {'won' if event.won else 'lost'} at ante {event.ante}, round {event.round}"
+        f"Run over ({event.reason.replace('_', ' ')}): {'won' if event.won else 'not won'}"
+        f" at ante {event.ante}, round {event.round}"
     ),
+    ItemBought: lambda event, _: f"Bought {event.key} for ${event.cost}",
+    ItemSold: lambda event, _: f"Sold {event.key} for ${event.value}",
+    ItemCreated: lambda event, _: f"{event.key} appeared in {event.area}",
+    ConsumableUsed: lambda event, labels: (
+        f"Used {event.key}" + (f" on {_names(event.targets, labels)}" if event.targets else "")
+    ),
+    ShopRerolled: lambda event, _: f"Rerolled the shop for ${event.cost}",
 }

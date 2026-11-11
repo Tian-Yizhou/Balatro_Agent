@@ -22,6 +22,8 @@ from typing import Any
 
 from .actions import (
     Action,
+    Buy,
+    BuyAndUse,
     CashOut,
     ContinueEndless,
     Discard,
@@ -30,13 +32,19 @@ from .actions import (
     MoveCard,
     MoveJoker,
     Play,
+    Reroll,
     SelectBlind,
+    SellConsumable,
+    SellJoker,
     SortByRank,
     SortBySuit,
     ToggleCard,
+    UseConsumable,
 )
 from .blinds import BLINDS, choose_boss, get_blind_amount
 from .cards import sort_key
+from .consumables import can_use, consumable_room, joker_room, use
+from .content import CENTERS
 from .effects import Area, Context, ContextKind, Effect, calculate_joker
 from .events import (
     AnteChanged,
@@ -47,19 +55,26 @@ from .events import (
     CardsDiscarded,
     CardsDrawn,
     CardToggled,
+    ConsumableUsed,
     Event,
     HandSorted,
+    ItemBought,
+    ItemCreated,
+    ItemSold,
     JokerMoved,
     RoundEnded,
     RunEnded,
+    ShopRerolled,
 )
 from .hands import initial_hand_levels
+from .inventory import add_to_deck, calculate_reroll_cost, remove_from_deck
 from .jokers import DOLLAR_BONUS
 from .modifiers import end_of_round_dollars, red_seal_repetitions
 from .rng import Rng
 from .scope import Scope
 from .scoring import evaluate_play
 from .serialize import clone
+from .shop import create_card, fill_shop
 from .state import (
     BlindSlot,
     BlindState,
@@ -127,14 +142,21 @@ def new_run(seed: str | int, config: RunConfig | None = None) -> RunState:
     }
     no_blind_reward: list[BlindSlot] = []
     scaling = 1
+    modifiers: dict[str, bool] = {}
     if config.stake >= 2:
         no_blind_reward.append(BlindSlot.SMALL)
     if config.stake >= 3:
         scaling = 2
+    if config.stake >= 4:
+        modifiers["eternals_in_shop"] = True
     if config.stake >= 5:
         params["discards"] -= 1
     if config.stake >= 6:
         scaling = 3
+    if config.stake >= 7:
+        modifiers["perishables_in_shop"] = True
+    if config.stake >= 8:
+        modifiers["rentals_in_shop"] = True
     for name, change in SUPPORTED_DECKS[config.deck].items():
         params[name] += change
 
@@ -182,6 +204,24 @@ def new_run(seed: str | int, config: RunConfig | None = None) -> RunState:
         payouts=[],
         probabilities_normal=1.0,
         pool_flags={},
+        bankrupt_at=0,
+        joker_rate=20,
+        tarot_rate=4,
+        planet_rate=4,
+        spectral_rate=0,
+        playing_card_rate=0,
+        edition_rate=1,
+        shop_joker_max=2,
+        base_reroll_cost=5,
+        reroll_cost=5,
+        reroll_cost_increase=0,
+        free_rerolls=0,
+        shop_cards=[],
+        last_tarot_planet=None,
+        consumable_usage={},
+        modifiers=modifiers,
+        perishable_rounds=5,
+        rental_rate=3,
         hand_sort=HandSort.RANK,
         deck=[],
         hand=[],
@@ -229,8 +269,16 @@ def legal_actions(state: RunState) -> list[Action]:
         actions.append(CashOut())
     elif phase is Phase.SHOP:
         actions.append(EndShop())
+        if _check_reroll(state, Reroll()):
+            actions.append(Reroll())
+        for i in range(len(state.shop_cards)):
+            for action in (Buy(i), BuyAndUse(i)):
+                if is_legal(state, action):
+                    actions.append(action)
     elif phase is Phase.WIN:
-        actions.extend((ContinueEndless(), EndRun()))
+        if state.config.endless:
+            actions.append(ContinueEndless())
+        actions.append(EndRun())
     if phase in _JOKER_MOVE_PHASES:
         size = len(state.jokers)
         actions.extend(
@@ -238,6 +286,15 @@ def legal_actions(state: RunState) -> list[Action]:
             for source in range(size)
             for target in range(size)
             if source != target
+        )
+        actions.extend(
+            SellJoker(index) for index, joker in enumerate(state.jokers) if not joker.eternal
+        )
+        actions.extend(SellConsumable(index) for index in range(len(state.consumables)))
+        actions.extend(
+            UseConsumable(index)
+            for index, item in enumerate(state.consumables)
+            if can_use(state, item, "consumables")
         )
     return actions
 
@@ -274,6 +331,57 @@ def _check_discard(state: RunState, _: Discard) -> bool:
     )
 
 
+def _affordable(state: RunState, cost: int) -> bool:
+    """Source: functions/button_callbacks.lua ``G.FUNCS.can_buy``."""
+    return cost <= state.money - state.bankrupt_at or cost <= 0
+
+
+def _check_buy(state: RunState, action: Buy) -> bool:
+    if state.phase is not Phase.SHOP or not 0 <= action.index < len(state.shop_cards):
+        return False
+    item = state.shop_cards[action.index]
+    if not _affordable(state, item.cost):
+        return False
+    bonus = 1 if item.edition == "e_negative" else 0
+    if CENTERS[item.key].is_joker:
+        return joker_room(state) + bonus > 0
+    return consumable_room(state) + bonus > 0
+
+
+def _check_buy_and_use(state: RunState, action: BuyAndUse) -> bool:
+    if state.phase is not Phase.SHOP or not 0 <= action.index < len(state.shop_cards):
+        return False
+    item = state.shop_cards[action.index]
+    return (
+        CENTERS[item.key].is_consumable
+        and _affordable(state, item.cost)
+        and can_use(state, item, "shop")
+    )
+
+
+def _check_reroll(state: RunState, _: Reroll) -> bool:
+    """Source: functions/button_callbacks.lua ``G.FUNCS.can_reroll``."""
+    if state.phase is not Phase.SHOP:
+        return False
+    return state.money - state.bankrupt_at - state.reroll_cost >= 0 or state.reroll_cost == 0
+
+
+def _check_sell_joker(state: RunState, action: SellJoker) -> bool:
+    return (
+        state.phase in _JOKER_MOVE_PHASES
+        and 0 <= action.index < len(state.jokers)
+        and not state.jokers[action.index].eternal
+    )
+
+
+def _check_use(state: RunState, action: UseConsumable) -> bool:
+    return (
+        state.phase in _JOKER_MOVE_PHASES
+        and 0 <= action.index < len(state.consumables)
+        and can_use(state, state.consumables[action.index], "consumables")
+    )
+
+
 _CHECKS: dict[type[Action], Callable[[RunState, Any], bool]] = {
     SelectBlind: lambda state, _: state.phase is Phase.BLIND_SELECT,
     ToggleCard: _check_toggle,
@@ -287,7 +395,15 @@ _CHECKS: dict[type[Action], Callable[[RunState, Any], bool]] = {
     Discard: _check_discard,
     CashOut: lambda state, _: state.phase is Phase.ROUND_EVAL,
     EndShop: lambda state, _: state.phase is Phase.SHOP,
-    ContinueEndless: lambda state, _: state.phase is Phase.WIN,
+    ContinueEndless: lambda state, _: state.phase is Phase.WIN and state.config.endless,
+    Buy: _check_buy,
+    BuyAndUse: _check_buy_and_use,
+    Reroll: _check_reroll,
+    SellJoker: _check_sell_joker,
+    SellConsumable: lambda state, action: (
+        state.phase in _JOKER_MOVE_PHASES and 0 <= action.index < len(state.consumables)
+    ),
+    UseConsumable: _check_use,
     EndRun: lambda state, _: state.phase is Phase.WIN,
     MoveJoker: lambda state, action: (
         state.phase in _JOKER_MOVE_PHASES
@@ -396,8 +512,13 @@ def _new_round(scope: Scope, slot: BlindSlot) -> None:
     state.hands_left = max(1, state.hands_per_round)
     state.hands_played_this_round = 0
     state.discards_used_this_round = 0
+    state.reroll_cost_increase = 0
     for level in state.hands.values():
         level.played_this_round = 0
+    state.free_rerolls = sum(
+        joker.key == "j_chaos" and not joker.debuffed for joker in state.jokers
+    )
+    calculate_reroll_cost(scope, skip_increment=True)
     blind = _set_blind(state, state.blind_choices[slot], slot)
     scope.emit(BlindSelected(slot, blind.key, blind.chips))
     for joker in list(state.jokers):
@@ -479,6 +600,7 @@ def _discard(scope: Scope, _: Discard) -> None:
         calculate_joker(scope, joker, Context(ContextKind.PRE_DISCARD, full_hand=cards))
     destroyed: list[PlayingCard] = []
     for card in cards:
+        _purple_seal(scope, card)
         removed = False
         for joker in list(state.jokers):
             effect = calculate_joker(
@@ -507,6 +629,40 @@ def _discard(scope: Scope, _: Discard) -> None:
     _draw_to_hand(scope)
 
 
+def _purple_seal(scope: Scope, card: PlayingCard) -> None:
+    """A discarded Purple Seal card creates a Tarot card, if there is room.
+
+    Source: card.lua ``Card:calculate_seal`` (``context.discard``).
+    """
+    if card.seal != "Purple" or card.debuffed:
+        return
+    if consumable_room(scope.state) - scope.consumable_buffer <= 0:
+        return
+    scope.consumable_buffer += 1
+
+    def create() -> None:
+        item = create_card(scope, "Tarot", "consumables", key_append="8ba")
+        scope.state.consumables.append(item)
+        scope.emit(ItemCreated(item.uid, item.key, "consumables"))
+        scope.consumable_buffer = 0
+
+    scope.defer(create)
+
+
+def _apply_stickers(scope: Scope, joker: Item) -> None:
+    """Rental jokers cost money and perishable jokers wear out at the end of a round.
+
+    Source: card.lua ``Card:calculate_rental`` and ``Card:calculate_perishable``.
+    """
+    state = scope.state
+    if joker.rental:
+        scope.change_money(-state.rental_rate, "rental")
+    if joker.perishable and joker.perish_tally > 0:
+        joker.perish_tally -= 1
+        if joker.perish_tally == 0:
+            joker.debuffed = True
+
+
 def _end_round(scope: Scope) -> None:
     """Source: functions/state_events.lua ``end_round``."""
     state = scope.state
@@ -520,6 +676,7 @@ def _end_round(scope: Scope) -> None:
         )
         if effect is not None and effect.saved:
             game_over = False
+        _apply_stickers(scope, joker)
     scope.flush()
     scope.emit(RoundEnded(blind=blind.key, won=beaten, score=state.chips, target=blind.chips))
     if game_over:
@@ -554,6 +711,9 @@ def _end_round(scope: Scope) -> None:
         scope.set_phase(Phase.WIN)
     else:
         scope.set_phase(Phase.ROUND_EVAL)
+    max_ante = state.config.max_ante
+    if max_ante is not None and blind.slot is BlindSlot.BOSS and state.ante > max_ante:
+        _game_over(scope, reason="max_ante")
 
 
 def _end_of_round_held_card(scope: Scope, card: PlayingCard) -> None:
@@ -620,6 +780,9 @@ def _cash_out(scope: Scope, _: CashOut) -> None:
     state.blind = None
     _reset_blinds(scope)
     scope.set_phase(Phase.SHOP)
+    fill_shop(scope)
+    for item in state.shop_cards:
+        scope.emit(ItemCreated(item.uid, item.key, "shop"))
 
 
 def _reset_blinds(scope: Scope) -> None:
@@ -643,6 +806,10 @@ def _end_shop(scope: Scope, _: EndShop) -> None:
     functions/UI_definitions.lua ``create_UIBox_blind_select``.
     """
     state = scope.state
+    for joker in list(state.jokers):
+        calculate_joker(scope, joker, Context(ContextKind.ENDING_SHOP))
+    scope.flush()
+    state.shop_cards.clear()
     done = (BlindStatus.DEFEATED, BlindStatus.SKIPPED)
     if state.blind_states[BlindSlot.SMALL] not in done:
         slot = BlindSlot.SMALL
@@ -662,13 +829,104 @@ def _continue_endless(scope: Scope, _: ContinueEndless) -> None:
 def _end_run(scope: Scope, _: EndRun) -> None:
     scope.set_phase(Phase.GAME_OVER)
     state = scope.state
-    scope.emit(RunEnded(won=True, ante=state.ante, round=state.round))
+    scope.emit(RunEnded(won=True, ante=state.ante, round=state.round, reason="won"))
 
 
-def _game_over(scope: Scope) -> None:
+def _game_over(scope: Scope, *, reason: str = "lost") -> None:
     scope.set_phase(Phase.GAME_OVER)
     state = scope.state
-    scope.emit(RunEnded(won=False, ante=state.ante, round=state.round))
+    scope.emit(RunEnded(won=state.won, ante=state.ante, round=state.round, reason=reason))
+
+
+def _buy(scope: Scope, action: Buy) -> None:
+    """Source: functions/button_callbacks.lua ``G.FUNCS.buy_from_shop``."""
+    state = scope.state
+    item = state.shop_cards.pop(action.index)
+    add_to_deck(scope, item)
+    if CENTERS[item.key].is_joker:
+        state.jokers.append(item)
+    else:
+        state.consumables.append(item)
+    scope.emit(ItemBought(item.uid, item.key, item.cost))
+    calculate_joker(scope, item, Context(ContextKind.BUYING_CARD, card=item))
+    for joker in list(state.jokers):
+        calculate_joker(scope, joker, Context(ContextKind.BUYING_CARD, card=item))
+    scope.change_money(-item.cost, "buy")
+
+
+def _buy_and_use(scope: Scope, action: BuyAndUse) -> None:
+    state = scope.state
+    item = state.shop_cards.pop(action.index)
+    scope.emit(ItemBought(item.uid, item.key, item.cost))
+    for joker in list(state.jokers):
+        calculate_joker(scope, joker, Context(ContextKind.BUYING_CARD, card=item))
+    scope.change_money(-item.cost, "buy")
+    _use(scope, item)
+
+
+def _use_consumable(scope: Scope, action: UseConsumable) -> None:
+    """Source: functions/button_callbacks.lua ``G.FUNCS.use_card``."""
+    item = scope.state.consumables.pop(action.index)
+    _use(scope, item)
+
+
+def _use(scope: Scope, item: Item) -> None:
+    state = scope.state
+    targets = tuple(card.uid for card in state.hand if card.selected)
+    before = {i.uid for i in (*state.jokers, *state.consumables)}
+    use(scope, item)
+    scope.emit(ConsumableUsed(item.uid, item.key, targets))
+    for new in (*state.jokers, *state.consumables):
+        if new.uid not in before:
+            area = "jokers" if new in state.jokers else "consumables"
+            scope.emit(ItemCreated(new.uid, new.key, area))
+            if area == "jokers":
+                add_to_deck(scope, new)
+    for joker in list(state.jokers):
+        calculate_joker(scope, joker, Context(ContextKind.USING_CONSUMABLE, card=item))
+    scope.flush()
+
+
+def _sell_joker(scope: Scope, action: SellJoker) -> None:
+    _sell(scope, scope.state.jokers, action.index)
+
+
+def _sell_consumable(scope: Scope, action: SellConsumable) -> None:
+    _sell(scope, scope.state.consumables, action.index)
+
+
+def _sell(scope: Scope, area: list[Item], index: int) -> None:
+    """Source: card.lua ``Card:sell_card``; button_callbacks.lua ``G.FUNCS.sell_card``."""
+    state = scope.state
+    item = area[index]
+    calculate_joker(scope, item, Context(ContextKind.SELLING_SELF, card=item))
+    for joker in list(state.jokers):
+        if joker is not item:
+            calculate_joker(scope, joker, Context(ContextKind.SELLING_CARD, card=item))
+    scope.change_money(item.sell_value, "sell")
+    area.remove(item)
+    remove_from_deck(scope, item)
+    scope.emit(ItemSold(item.uid, item.key, item.sell_value))
+    scope.flush()
+
+
+def _reroll(scope: Scope, _: Reroll) -> None:
+    """Source: functions/button_callbacks.lua ``G.FUNCS.reroll_shop``."""
+    state = scope.state
+    cost = state.reroll_cost
+    if cost > 0:
+        scope.change_money(-cost, "reroll")
+    final_free = state.free_rerolls > 0
+    state.free_rerolls = max(state.free_rerolls - 1, 0)
+    calculate_reroll_cost(scope, skip_increment=final_free)
+    state.shop_cards.clear()
+    fill_shop(scope)
+    scope.emit(ShopRerolled(cost))
+    for item in state.shop_cards:
+        scope.emit(ItemCreated(item.uid, item.key, "shop"))
+    for joker in list(state.jokers):
+        calculate_joker(scope, joker, Context(ContextKind.REROLL_SHOP))
+    scope.flush()
 
 
 _HANDLERS: dict[type[Action], Callable[[Scope, Any], None]] = {
@@ -684,4 +942,10 @@ _HANDLERS: dict[type[Action], Callable[[Scope, Any], None]] = {
     EndShop: _end_shop,
     ContinueEndless: _continue_endless,
     EndRun: _end_run,
+    Buy: _buy,
+    BuyAndUse: _buy_and_use,
+    UseConsumable: _use_consumable,
+    SellJoker: _sell_joker,
+    SellConsumable: _sell_consumable,
+    Reroll: _reroll,
 }

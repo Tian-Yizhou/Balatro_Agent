@@ -31,6 +31,15 @@ Notable changes to this project. The format follows
   effect are unavailable (ADR 0003).
 - `EffectApplied`, `CardRetriggered`, `CardDestroyed`, `JokerDestroyed` and
   `HandLevelChanged` events, which the replay viewer shows as a scoring breakdown.
+- The shop: card slots rolled by the game's type, rarity and edition odds; buying,
+  buying and using, selling and rerolling; eternal, perishable and rental stickers
+  at higher stakes.
+- All 12 Planet and 22 Tarot cards, usable from the consumable slots or straight
+  from the shop, and the Purple Seal.
+- 10 more jokers that react to the shop and to consumables, or that change hand
+  size, discards, money limits and rerolls while owned.
+- Run options `endless` and `max_ante`.
+- An engine throughput benchmark in `tools/bench/`.
 
 ### Changed
 

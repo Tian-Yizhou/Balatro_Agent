@@ -281,6 +281,10 @@ debugging. Events are derived data: a state can be restored without them.
 - After winning, the agent chooses `continue_endless` or `end_run`.
 - Run config options: `max_ante` (stop early, for example for a curriculum) and
   `endless` on/off.
+  - With `max_ante = n`, the run ends once the boss of ante `n` is beaten. It counts
+    as won only if the real win condition was met; the `RunEnded` event gives the
+    reason (`"lost"`, `"won"` or `"max_ante"`).
+  - With `endless` off, the only choice after winning is to end the run.
 
 ### 4.9 What the agent can see
 `observe(state) → Observation` returns only what a human player can see:

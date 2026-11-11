@@ -178,10 +178,20 @@ class Payout:
 
 @dataclass(frozen=True, slots=True)
 class RunConfig:
-    """Options fixed when a run starts."""
+    """Options fixed when a run starts.
+
+    Attributes:
+        deck: The deck (``Back``) key.
+        stake: The stake level, 1 (White) to 8 (Gold).
+        endless: Whether the run may continue after it is won.
+        max_ante: End the run, as a win, once this ante is reached; ``None``
+            for no limit. Useful for curricula.
+    """
 
     deck: str = "b_red"
     stake: int = 1
+    endless: bool = True
+    max_ante: int | None = None
 
 
 @dataclass(slots=True)
@@ -232,6 +242,28 @@ class RunState:
     probabilities_normal: float
     #: Flags that add or remove items from pools, such as ``gros_michel_extinct``.
     pool_flags: dict[str, bool]
+    #: The player may spend down to this amount of money (Credit Card).
+    bankrupt_at: int
+    # Shop (G.GAME rates, G.GAME.shop and the reroll fields of current_round).
+    joker_rate: float
+    tarot_rate: float
+    planet_rate: float
+    spectral_rate: float
+    playing_card_rate: float
+    edition_rate: float
+    shop_joker_max: int
+    base_reroll_cost: int
+    reroll_cost: int
+    reroll_cost_increase: int
+    free_rerolls: int
+    shop_cards: list[Item]
+    # Consumable history.
+    last_tarot_planet: str | None
+    consumable_usage: dict[str, int]
+    #: Extra modifiers set by stakes, such as ``"eternals_in_shop"``.
+    modifiers: dict[str, bool]
+    perishable_rounds: int
+    rental_rate: int
     # Card areas. The deck is the draw pile: cards are drawn from its end, and
     # its order is hidden from the player.
     hand_sort: HandSort

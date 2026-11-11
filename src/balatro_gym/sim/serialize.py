@@ -47,7 +47,14 @@ def to_data(value: object) -> Any:
     if isinstance(value, Rng):
         return value.to_dict()
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
-        return {name: to_data(getattr(value, name)) for name in _field_names(type(value))}
+        float_fields = _float_fields(type(value))
+        data: dict[str, Any] = {}
+        for name in _field_names(type(value)):
+            field_value = getattr(value, name)
+            if name in float_fields and type(field_value) is int:
+                field_value = float(field_value)
+            data[name] = to_data(field_value)
+        return data
     if isinstance(value, list | tuple):
         return [to_data(item) for item in cast("list[object]", value)]
     if isinstance(value, dict):
@@ -104,6 +111,25 @@ def _field_names(cls: type) -> tuple[str, ...]:
 @cache
 def _hints(cls: type) -> dict[str, Any]:
     return typing.get_type_hints(cls)
+
+
+@cache
+def _float_fields(cls: type) -> frozenset[str]:
+    """Fields declared as ``float`` (or ``float | None``), which always serialize as floats.
+
+    Python lets an ``int`` sit in a ``float`` field; without this, ``1`` and ``1.0``
+    would give different snapshot text for equal states.
+    """
+    names: set[str] = set()
+    for name, hint in _hints(cls).items():
+        args = (
+            typing.get_args(hint)
+            if typing.get_origin(hint) in (typing.Union, types.UnionType)
+            else (hint,)
+        )
+        if float in args:
+            names.add(name)
+    return frozenset(names)
 
 
 def _key_to_data(key: object) -> str:
