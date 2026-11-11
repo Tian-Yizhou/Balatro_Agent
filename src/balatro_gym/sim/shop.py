@@ -52,8 +52,7 @@ def is_available(state: RunState, center: Center) -> bool:
         return False
     if key in _used_keys(state) and not find_joker(state, "j_ring_master"):
         return False
-    if not center.unlocked and center.rarity != 4:
-        return False
+    # Runs use the "everything unlocked" mode (plan D6); progression comes later.
     if center.set == "Planet" and center.config.get("softlock"):
         hand = HandType(center.config["hand_type"])
         if state.hands[hand].played == 0:
