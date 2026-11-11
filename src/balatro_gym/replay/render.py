@@ -137,6 +137,25 @@ def _money(event: ev.MoneyChanged, labels: dict[int, str]) -> str:
     return f"{sign}${abs(event.delta)} from {reason} (now ${event.balance})"
 
 
+def _effect(event: ev.EffectApplied, labels: dict[int, str]) -> str:
+    parts = []
+    if event.chips:
+        parts.append(f"{event.chips:+g} chips")
+    if event.mult:
+        parts.append(f"{event.mult:+g} mult")
+    if event.x_mult != 1:
+        parts.append(f"x{event.x_mult:g} mult")
+    if event.dollars:
+        parts.append(f"{event.dollars:+d} $")
+    own = event.key in ("card", "held")
+    source = labels.get(event.source, event.key) if own else event.key
+    if not own and event.target is not None:
+        source += f" on {_names([event.target], labels)}"
+    if event.via is not None:
+        source += " (copied)"
+    return f"  {source}: {', '.join(parts)}"
+
+
 def _round_ended(event: ev.RoundEnded, labels: dict[int, str]) -> str:
     name = BLINDS[event.blind].name
     result = "Beat" if event.won else "Lost to"
@@ -169,7 +188,11 @@ _FORMATTERS: dict[type[Event], Callable[[Any, dict[int, str]], str]] = {
     ev.HandPlayed: lambda e, labels: (
         f"Played {_names(e.uids, labels)}: {e.hand.value}, scoring {_names(e.scoring, labels)}"
     ),
-    ev.CardScored: lambda e, labels: f"  {_names([e.uid], labels)} +{_number(e.chips)} chips",
+    ev.EffectApplied: lambda e, labels: _effect(e, labels),
+    ev.CardRetriggered: lambda e, labels: f"  {_names([e.uid], labels)} retriggered by {e.key}",
+    ev.CardDestroyed: lambda e, labels: f"{_names([e.uid], labels)} destroyed ({e.reason})",
+    ev.JokerDestroyed: lambda e, _: f"{e.key} destroyed ({e.reason})",
+    ev.HandLevelChanged: lambda e, _: f"{e.hand.value} is now level {e.level}",
     ev.HandScored: _hand_scored,
     ev.CardsDiscarded: lambda e, labels: f"Discarded {_names(e.uids, labels)}",
     ev.RoundEnded: _round_ended,

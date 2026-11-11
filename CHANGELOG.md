@@ -21,6 +21,17 @@ Notable changes to this project. The format follows
   check, a text viewer (`python -m balatro_gym.replay`), and golden replays in
   `tests/golden/`.
 
+- Item data for all 296 jokers, consumables, vouchers, packs, editions,
+  enhancements and decks, extracted from the game by `tools/extract_content/`.
+- The full scoring pipeline: retriggers, cards held in hand, joker editions,
+  effects between jokers, destroyed cards, and the joker contexts before and after
+  scoring, on discards and at the end of the round.
+- Enhancements, editions and seals on playing cards.
+- 52 jokers, including Blueprint and Brainstorm. Jokers without an implemented
+  effect are unavailable (ADR 0003).
+- `EffectApplied`, `CardRetriggered`, `CardDestroyed`, `JokerDestroyed` and
+  `HandLevelChanged` events, which the replay viewer shows as a scoring breakdown.
+
 ### Changed
 
 - Restructure the repository for v2: a `src/` layout with the `sim`, `replay`, `env`

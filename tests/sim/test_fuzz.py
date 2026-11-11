@@ -10,7 +10,10 @@ import pytest
 
 from balatro_gym.sim import Game, IllegalActionError, is_legal, legal_actions, snapshot
 from balatro_gym.sim import actions as act
+from balatro_gym.sim.effects import JOKERS
 from balatro_gym.sim.engine import SELECTION_LIMIT
+from balatro_gym.sim.events import CardDestroyed
+from balatro_gym.sim.items import new_item
 from balatro_gym.sim.state import Phase, RunState
 from scenarios import Policy, greedy_policy, play_game, random_policy
 
@@ -30,6 +33,7 @@ def candidate_actions(state: RunState) -> list[act.Action]:
 
 
 def check_invariants(game: Game, uids: set[int]) -> None:
+    """``uids`` are the playing cards still owned; destroyed cards are removed from it."""
     state = game.state
     assert {card.uid for card in state.playing_cards()} == uids
     assert len(state.playing_cards()) == len(uids)
@@ -45,20 +49,45 @@ def check_invariants(game: Game, uids: set[int]) -> None:
     assert bool(legal) != state.is_over
 
 
+def equip(game: Game, rnd: random.Random) -> None:
+    """Give the player random implemented jokers and random card modifiers."""
+    state = game.state
+    for key in rnd.sample(sorted(JOKERS), 5):
+        joker = new_item(state, key)
+        joker.edition = rnd.choice([None, None, "e_foil", "e_holo", "e_polychrome"])
+        state.jokers.append(joker)
+    for card in state.deck:
+        card.enhancement = rnd.choice([None, None, None, *ENHANCEMENTS])
+        card.edition = rnd.choice([None, None, None, None, "e_foil", "e_holo", "e_polychrome"])
+        card.seal = rnd.choice([None, None, None, None, "Red", "Gold", "Blue"])
+
+
+ENHANCEMENTS = ["m_bonus", "m_mult", "m_wild", "m_glass", "m_steel", "m_stone", "m_gold", "m_lucky"]
+
+
 @pytest.mark.parametrize(
-    ("policy", "seeds"),
-    [(random_policy, range(25)), (greedy_policy, range(8))],
-    ids=["random", "greedy"],
+    ("policy", "seeds", "equipped"),
+    [
+        (random_policy, range(25), False),
+        (greedy_policy, range(8), False),
+        (greedy_policy, range(15), True),
+        (random_policy, range(15), True),
+    ],
+    ids=["random", "greedy", "greedy-jokers", "random-jokers"],
 )
-def test_invariants_hold(policy: Policy, seeds: range) -> None:
+def test_invariants_hold(policy: Policy, seeds: range, equipped: bool) -> None:
     for seed in seeds:
         game = Game.new(seed)
-        uids = {card.uid for card in game.state.playing_cards()}
         rnd = random.Random(seed)
+        if equipped:
+            equip(game, rnd)
+        uids = {card.uid for card in game.state.playing_cards()}
         steps = 0
         while not game.is_over and steps < 3000:
             for action in policy(game, rnd):
-                game.step(action)
+                for event in game.step(action):
+                    if isinstance(event, CardDestroyed):
+                        uids.discard(event.uid)
                 steps += 1
                 check_invariants(game, uids)
             if steps % 50 == 0:

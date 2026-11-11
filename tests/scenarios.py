@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import itertools
 import random
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any
 
 from balatro_gym.sim import Game, macros
 from balatro_gym.sim import actions as act
+from balatro_gym.sim import events as ev
 from balatro_gym.sim.cards import chip_bonus
 from balatro_gym.sim.hands import display_name, evaluate_poker_hand
+from balatro_gym.sim.items import new_item
 from balatro_gym.sim.state import Phase, PlayingCard, RunState, Suit
 
 Policy = Callable[[Game, random.Random], list[act.Action]]
@@ -121,3 +123,31 @@ def play_game(
             game.step(action)
             taken.append(action)
     return game, taken
+
+
+def play_hand(
+    played: str,
+    *,
+    held: str = "",
+    jokers: Sequence[str] = (),
+    setup: Callable[[RunState, list[PlayingCard]], None] | None = None,
+    seed: str = "score",
+) -> tuple[Game, list[ev.Event], ev.HandScored]:
+    """Play the cards in ``played`` with ``held`` kept in hand and ``jokers`` owned.
+
+    ``setup`` can change the state and the cards (played first, then held)
+    before the hand is played. Returns the game, the events of the play, and the
+    hand's score.
+    """
+    game = started_round(seed)
+    state = game.state
+    cards = list(set_hand(state, f"{played} {held}"))
+    for key in jokers:
+        state.jokers.append(new_item(state, key))
+    if setup is not None:
+        setup(state, cards)
+    events: list[ev.Event] = []
+    for action in macros.play_cards(state, range(len(played.split()))):
+        events += game.step(action)
+    scored = next(e for e in events if isinstance(e, ev.HandScored))
+    return game, events, scored

@@ -139,6 +139,7 @@ class Item:
     rental: bool = False
     debuffed: bool = False
     selected: bool = False
+    cost: int = 0
     sell_value: int = 0
     values: dict[str, Scalar] = field(default_factory=dict[str, Scalar])
 
@@ -221,10 +222,16 @@ class RunState:
     # Economy and difficulty modifiers.
     interest_cap: int
     interest_amount: int
+    inflation: int
+    discount_percent: int
     scaling: int
     ante_scaling: float
     no_blind_reward: list[BlindSlot]
     payouts: list[Payout]
+    #: Scales every "1 in N" chance (``G.GAME.probabilities.normal``).
+    probabilities_normal: float
+    #: Flags that add or remove items from pools, such as ``gros_michel_extinct``.
+    pool_flags: dict[str, bool]
     # Card areas. The deck is the draw pile: cards are drawn from its end, and
     # its order is hidden from the player.
     hand_sort: HandSort
