@@ -10,23 +10,48 @@ precisely and briefly. Nothing else.
 
 ## 1. Workflow
 
-1. Create a branch from an up-to-date `main`.
-2. Commit in small, logical steps.
-3. Open a PR into `main`. CI must pass.
+There are two paths to `main`. Pick by the size and risk of the change.
+
+**Pull request: for significant changes.** A new feature or capability, a change to
+game behavior, a public interface or a data format, or a large refactor.
+
+1. Create a branch from an up-to-date `main` (§2).
+2. Commit as each logical unit of work is completed (§3.8).
+3. When the work is complete and tested, open one PR into `main`. CI must pass.
 4. The maintainer reviews and **squash-merges** the PR, and the branch is deleted.
 
-`main` changes only through merged PRs. Nobody pushes to it directly.
+**Direct commit: for small, low-risk changes.** Documentation fixes, configuration
+tweaks, and similar housekeeping. Commit to `main` and push; CI runs on the push.
+If a branch for related work is open, put the change on that branch instead.
+
+`main` is never force-pushed.
 
 ---
 
 ## 2. Branches
 
+### 2.1 When to open a branch
+
+Branches carry work that will become a PR (§1). Opening one is an engineering
+judgment. A branch holds one **coherent change**: a piece of work that makes sense
+to review, test and merge as a whole.
+
+- Related small tasks can share a branch, for example several jokers with the same
+  mechanism.
+- Unrelated changes go on separate branches, so each PR stays focused.
+- Large work is split into a series of branches that each leave `main` working.
+- New work starts on a new branch from `main`. A branch is never reused after it
+  has been merged.
+- There is no long-lived integration branch: `main` is always releasable, and
+  tags mark stable snapshots.
+
+### 2.2 Naming and upkeep
+
 Format: `<type>/<short-description>`
 
-- `<type>` is one of the commit types in §3.2.
+- `<type>` is the commit type (§3.2) that best describes the branch as a whole.
 - `<short-description>` is 2–5 lowercase words joined by hyphens.
 - Examples: `feat/sim-scoring-pipeline`, `fix/shop-reroll-cost`, `docs/adr-rng`.
-- One topic per branch. Branches should live for days, not weeks.
 - To catch up with `main`, rebase onto it. After rebasing a pushed branch, push with
   `git push --force-with-lease`.
 
@@ -115,10 +140,11 @@ A breaking change marks the header with `!`, as in `feat(env)!: …`, and adds a
 
 ### 3.8 Commit content
 
+- Commit when a logical unit of work is complete and the tests pass, not after
+  every edit. Exploratory or temporary work is not committed.
 - One logical change per commit. Don't mix reformatting or renaming with changes in
   behavior.
-- Every commit on `main` must build and pass the tests. Squash merging guarantees
-  this on `main`; aim for it on branches too.
+- Every commit on `main` must build and pass the tests.
 - Never commit secrets, local data, large generated files, or any part of the
   original game (code, assets, text).
 
@@ -191,13 +217,13 @@ Follow-up work is tracked in issues.
 
 ### 4.4 Size and scope
 
-- One topic per PR.
-- Aim for under 400 changed lines, not counting lockfiles, generated data and test
-  fixtures. Split larger work into a series of PRs.
-- Open a **draft** PR while the work is in progress. Mark it ready once CI passes
-  and the description is final.
+- A PR delivers one feature or capability, complete and tested.
+- Keep it reviewable in one sitting. Split work beyond roughly 1,000 changed lines
+  of code (not counting lockfiles, generated data and test fixtures) into a series
+  of PRs.
+- Open the PR when the work is done. Use a draft PR only to get early feedback.
 
-### 4.5 Before marking a PR ready
+### 4.5 Before opening a PR
 
 The author confirms all of these. They don't go in the description.
 
@@ -222,7 +248,7 @@ The author confirms all of these. They don't go in the description.
 ## 5. AI-assisted changes
 
 - All the rules above apply unchanged.
-- An AI assistant works on a branch and may open PRs. It never merges and never
-  pushes to `main`.
+- An AI assistant may open PRs and make direct commits as §1 allows. It never merges
+  PRs and never force-pushes `main`.
 - AI tools are never listed as co-authors. Commits and PRs carry no AI attribution
   of any kind.

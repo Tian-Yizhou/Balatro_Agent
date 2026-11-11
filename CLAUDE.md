@@ -8,8 +8,9 @@ Read these before changing anything:
 ## Hard rules
 
 - Never list an AI tool as a co-author. Commits and PRs carry no AI attribution.
-- Never push to `main`, never merge PRs, and never force-push shared branches.
-  Work on a branch and open a PR for the maintainer.
+- Significant changes go through a branch and one PR; small, low-risk changes are
+  committed directly to `main` (CONTRIBUTING.md §1). Commit finished units of work,
+  not every edit. Never merge PRs and never force-push `main`.
 - Never commit any part of the original game: code, assets or text. The
   maintainer's local reference copy of the source is found through `BALATRO_LUA_DIR`.
 - Raise design decisions with the maintainer before building on them. Record
