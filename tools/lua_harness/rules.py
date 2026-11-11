@@ -10,7 +10,15 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-__all__ = ["CardDescription", "LuaRules", "discard", "end_of_round", "score"]
+__all__ = [
+    "CardDescription",
+    "LuaRules",
+    "discard",
+    "end_of_round",
+    "score",
+    "shop",
+    "use_consumable",
+]
 
 HERE = Path(__file__).parent
 
@@ -82,8 +90,20 @@ class LuaRules:
         for relative in _SOURCES:
             self.lua.execute((lua_dir / relative).read_text(encoding="utf-8"))
         self.lua.execute((HERE / "game_env.lua").read_text(encoding="utf-8"))
+        self._load_shop_card_creation(lua_dir)
         self._load_item_prototypes(lua_dir)
         self.globals: Any = self.lua.globals()
+
+    def _load_shop_card_creation(self, lua_dir: Path) -> None:
+        """Load ``create_card_for_shop`` from the UI definitions, without the UI.
+
+        The rest of that file builds menus and screens, so only this function is
+        taken; the price tags it attaches (``create_shop_card_ui``) are absorbed.
+        """
+        source = (lua_dir / "functions/UI_definitions.lua").read_text(encoding="utf-8")
+        start = source.index("function create_card_for_shop(area)")
+        end = source.index("function create_shop_card_ui", start)
+        self.lua.execute(source[start:end] + "\nfunction create_shop_card_ui() end\n")
 
     def _load_item_prototypes(self, lua_dir: Path) -> None:
         """Build ``G.P_CENTERS`` and the item pools with the game's own code.
@@ -226,6 +246,16 @@ def score(rules: LuaRules, scenario: dict[str, Any]) -> dict[str, Any]:
         levels=scenario["levels"],
         seed=str(scenario.get("seed", "")),
     )
+    tarots_used = scenario.get("tarots_used", 0)
+    rules.globals.G.GAME.consumeable_usage_total = rules.table(
+        {
+            "tarot": tarots_used,
+            "planet": 0,
+            "spectral": 0,
+            "tarot_planet": tarots_used,
+            "all": tarots_used,
+        }
+    )
     played = []
     for position, card in enumerate(scenario["played"]):
         played.append(_playing_card(rules, card, position))
@@ -348,5 +378,187 @@ def discard(rules: LuaRules, scenario: dict[str, Any]) -> dict[str, Any]:
     return {
         "dollars": int(rules.game.dollars),
         "jokers": [_flatten_ability(item.ability) for item in jokers],
+        # A Purple Seal creates a random Tarot: compare the kind, not the card.
+        "consumables": [item.ability.set for item in rules.area("consumeables")],
+    }
+
+
+_STATES = {"selecting_hand": "SELECTING_HAND", "shop": "SHOP", "blind_select": "BLIND_SELECT"}
+_RANK_IDS = {"Jack": 11, "Queen": 12, "King": 13, "Ace": 14}
+
+
+def _describe_card(card: Any) -> dict[str, Any]:
+    """A playing card's rank, suit and modifiers, read back from the game."""
+    center = card.config.center.key
+    edition = card.edition and card.edition.type
+    return {
+        "uid": int(card.ID),
+        "rank": int(card.base.id),
+        "suit": str(card.base.suit)[0],
+        "enhancement": None if center == "c_base" else center,
+        "edition": f"e_{edition}" if edition else None,
+        "seal": card.seal,
+    }
+
+
+def use_consumable(rules: LuaRules, scenario: dict[str, Any]) -> dict[str, Any]:
+    """Use a consumable with the game's own ``use_consumeable``.
+
+    The scenario gives the hand and the selected positions, the consumable and
+    any other consumables and jokers owned, the phase and the money. Returns
+    whether the game allows the use and, if it does, everything the use changed.
+    """
+    rules.new_game(
+        dollars=scenario["dollars"],
+        probability=scenario["probability"],
+        hands_left=2,
+        discards_left=2,
+        levels=scenario.get("levels", {}),
+    )
+    globals_ = rules.globals
+    game = globals_.G.GAME
+    game.last_tarot_planet = scenario.get("last_tarot_planet")
+    globals_.G.STATE = globals_.G.STATES[_STATES[scenario["phase"]]]
+    for position, card in enumerate(scenario["held"]):
+        rules.add("hand", _playing_card(rules, card, position))
+    hand = globals_.G.hand
+    for position in scenario["selected"]:
+        hand.highlighted[len(hand.highlighted) + 1] = hand.cards[position + 1]
+    jokers = []
+    for position, joker in enumerate(scenario["jokers"]):
+        item = rules.item(
+            joker["uid"], joker["key"], edition=joker.get("edition"), position=position
+        )
+        _apply_values(item, joker.get("values", {}))
+        jokers.append(item)
+        rules.add("jokers", item)
+    for position, other in enumerate(scenario.get("consumables", [])):
+        rules.add("consumeables", rules.item(500 + position, other))
+    used = rules.item(999, scenario["consumable"])
+    rules.add("consumeables", used)
+    rules.run_events()
+    # The game refreshes derived values (selection limits, Temperance's payout,
+    # the Wheel of Fortune's targets) in its per-frame update.
+    used.update(used, 0)
+    if not used.can_use_consumeable(used):
+        return {"usable": False}
+    globals_.G.consumeables.remove_card(globals_.G.consumeables, used)
+    used.use_consumeable(used, globals_.G.consumeables)
+    for item in rules.area("jokers"):
+        item.calculate_joker(item, rules.table({"using_consumeable": True, "consumeable": used}))
+    rules.run_events()
+    levels = game.hands
+    return {
+        "usable": True,
+        "hand": [_describe_card(card) for card in rules.area("hand")],
+        "levels": {name: int(levels[name].level) for name in sorted(levels)},
+        "dollars": int(game.dollars),
         "consumables": [item.config.center.key for item in rules.area("consumeables")],
+        "jokers": [
+            {"key": item.config.center.key, "edition": bool(item.edition)}
+            for item in rules.area("jokers")
+        ],
+        "joker_values": [_flatten_ability(item.ability) for item in jokers],
+        "last_tarot_planet": game.last_tarot_planet,
+    }
+
+
+_POOLS = {"Joker1": ("Joker", 0.5), "Joker2": ("Joker", 0.8), "Joker3": ("Joker", 0.99)}
+
+
+def shop(rules: LuaRules, scenario: dict[str, Any]) -> dict[str, Any]:
+    """Check shop rules with the game's code: pools, prices, lasting joker effects,
+    and selling.
+
+    Every item counts as unlocked, the engine's default mode. Returns the keys each
+    pool may offer, each joker's price and sell value, the run's numbers after the
+    ``gained`` joker is added and after it is removed again, and the results of
+    selling the joker at ``sell`` (money, jokers left, their values).
+    """
+    globals_ = rules.globals
+    rules.lua.execute("for _, center in pairs(G.P_CENTERS) do center.unlocked = true end")
+    rules.new_game(dollars=scenario["dollars"], probability=1, hands_left=3, discards_left=3)
+    game = globals_.G.GAME
+    game.inflation = scenario["inflation"]
+    game.discount_percent = scenario["discount"]
+    # Values a real run sets in Game:start_run.
+    game.round_resets.discards = 3
+    game.round_resets.reroll_cost = 5
+    for name in scenario["played_hands"]:
+        game.hands[name].played = 1
+    for flag in scenario["pool_flags"]:
+        game.pool_flags[flag] = True
+    jokers = []
+    for position, joker in enumerate(scenario["jokers"]):
+        item = rules.item(
+            joker["uid"], joker["key"], edition=joker.get("edition"), position=position
+        )
+        if joker.get("rental"):
+            item.set_rental(item, True)
+        _apply_values(item, joker.get("values", {}))
+        item.set_cost(item)
+        jokers.append(item)
+        rules.add("jokers", item)
+    for position, key in enumerate(scenario["consumables"]):
+        rules.add("consumeables", rules.item(700 + position, key))
+
+    pools = {}
+    for name, (set_name, rarity) in {
+        **_POOLS,
+        "Tarot": ("Tarot", None),
+        "Planet": ("Planet", None),
+    }.items():
+        pool, _ = globals_.get_current_pool(set_name, rarity)
+        keys = [pool[i] for i in range(1, len(pool) + 1)]
+        pools[name] = sorted(key for key in keys if key != "UNAVAILABLE")
+    prices = [[int(item.cost), int(item.sell_cost)] for item in jokers]
+
+    def run_numbers() -> dict[str, int]:
+        current = game.current_round
+        return {
+            "hand_size": int(globals_.G.hand.config.card_limit),
+            "discards_per_round": int(game.round_resets.discards),
+            "discards_left": int(current.discards_left),
+            "bankrupt_at": int(game.bankrupt_at),
+            "free_rerolls": int(current.free_rerolls),
+            "reroll_cost": int(current.reroll_cost),
+        }
+
+    gained = rules.item(800, scenario["gained"])
+    gained.added_to_deck = False
+    gained.add_to_deck(gained)
+    rules.run_events()
+    after_gain = run_numbers()
+    gained.remove_from_deck(gained)
+    rules.run_events()
+    after_loss = run_numbers()
+
+    globals_.G.shop_jokers = globals_.harness.area("shop")
+    game.shop.joker_max = 2
+    for _ in range(scenario["rerolls"]):
+        button = rules.table({"config": {}})
+        globals_.G.FUNCS.can_reroll(button)
+        if button.config.button != "reroll_shop":
+            break
+        globals_.G.FUNCS.reroll_shop()
+        rules.run_events()
+    reroll_cost = int(game.current_round.reroll_cost)
+
+    sold = rules.area("jokers")[scenario["sell"]] if scenario["sell"] is not None else None
+    if sold is not None:
+        globals_.G.FUNCS.sell_card(rules.table({"config": {"ref_table": sold}}))
+        rules.run_events()
+    remaining = {item.ID for item in rules.area("jokers")}
+    return {
+        "pools": pools,
+        "prices": prices,
+        "after_gain": after_gain,
+        "after_loss": after_loss,
+        "reroll_cost": reroll_cost,
+        "dollars": int(game.dollars),
+        "jokers": {
+            joker["uid"]: _flatten_ability(item.ability)
+            for joker, item in zip(scenario["jokers"], jokers, strict=True)
+            if item.ID in remaining
+        },
     }

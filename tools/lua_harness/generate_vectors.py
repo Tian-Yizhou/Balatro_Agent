@@ -10,10 +10,12 @@ Usage::
 
 from __future__ import annotations
 
+import gzip
 import json
 import sys
 from pathlib import Path
 
+from consumable_scenarios import random_consumable_scenarios, random_shop_scenarios
 from harness import (
     CardSpec,
     LuaGame,
@@ -22,20 +24,21 @@ from harness import (
     parse_cards,
     random_hand_cases,
 )
-from rules import LuaRules, discard, end_of_round, score
+from rules import LuaRules, discard, end_of_round, score, shop, use_consumable
 from scoring_scenarios import (
     random_discard_scenarios,
     random_round_end_scenarios,
     random_scoring_scenarios,
 )
 
+from balatro_gym.sim.consumables import IMPLEMENTED as CONSUMABLES
 from balatro_gym.sim.effects import JOKERS
 
 #: Jokers compared against the game. Misprint's mult is random, so it is checked
 #: separately, by range.
 VERIFIED_JOKERS = sorted(key for key in JOKERS if key != "j_misprint")
 #: Seals whose effects the engine implements.
-VERIFIED_SEALS = ("Red", "Gold", "Blue")
+VERIFIED_SEALS = ("Red", "Gold", "Blue", "Purple")
 
 OUT_DIR = Path(__file__).resolve().parents[2] / "tests" / "sim" / "data"
 
@@ -100,7 +103,16 @@ def main() -> int:
             {"scenario": scenario, "expected": run(rules, scenario)}
             for scenario in scenarios(20261111, count, VERIFIED_JOKERS, seals=VERIFIED_SEALS)
         ]
-    _write("lua_rules.json", payload)
+    consumables = sorted(CONSUMABLES)
+    payload["consumable"] = [
+        {"scenario": scenario, "expected": use_consumable(rules, scenario)}
+        for scenario in random_consumable_scenarios(20261111, 200, consumables, VERIFIED_JOKERS)
+    ]
+    payload["shop"] = [
+        {"scenario": scenario, "expected": shop(rules, scenario)}
+        for scenario in random_shop_scenarios(20261111, 80, sorted(JOKERS), consumables)
+    ]
+    _write("lua_rules.json.gz", payload)
     return 0
 
 
@@ -117,7 +129,12 @@ def _write(name: str, payload: dict[str, object]) -> None:
             parts.append(f"{json.dumps(key)}:{json.dumps(value, separators=(',', ':'))}")
     path = OUT_DIR / name
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("{" + ",\n".join(parts) + "}\n", encoding="utf-8")
+    text = "{" + ",\n".join(parts) + "}\n"
+    if path.suffix == ".gz":
+        # The situations with their results are large; they are stored compressed.
+        path.write_bytes(gzip.compress(text.encode("utf-8"), mtime=0))
+    else:
+        path.write_text(text, encoding="utf-8")
     print(f"wrote {path} ({path.stat().st_size:,} bytes)")
 
 

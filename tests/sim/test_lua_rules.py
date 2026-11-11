@@ -1,6 +1,6 @@
 """The engine against the game's own rule code: scoring, the round end and discards.
 
-``lua_rules.json`` holds situations with the results the original game computed for
+``lua_rules.json.gz`` holds situations with the results the original game computed for
 them, written by ``tools/lua_harness/generate_vectors.py``; CI checks the engine
 against them. Where ``BALATRO_LUA_DIR`` points to the game's source, the live
 tests also compare thousands of fresh random situations directly.
@@ -8,6 +8,7 @@ tests also compare thousands of fresh random situations directly.
 
 from __future__ import annotations
 
+import gzip
 import importlib.util
 import json
 import sys
@@ -18,15 +19,20 @@ from typing import Any
 
 import pytest
 
+from balatro_gym.sim.consumables import IMPLEMENTED as CONSUMABLES
 from balatro_gym.sim.effects import JOKERS
 from scenarios import (
+    compare_consumable_use,
     compare_results,
+    compare_shop,
     engine_discard,
     engine_end_of_round,
     engine_score,
+    engine_shop,
+    engine_use_consumable,
 )
 
-DATA = Path(__file__).parent / "data" / "lua_rules.json"
+DATA = Path(__file__).parent / "data" / "lua_rules.json.gz"
 HARNESS = Path(__file__).resolve().parents[2] / "tools" / "lua_harness"
 
 ENGINE_RUNNERS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
@@ -38,19 +44,27 @@ ENGINE_RUNNERS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
 
 @pytest.mark.parametrize("kind", sorted(ENGINE_RUNNERS))
 def test_matches_original_game_vectors(kind: str) -> None:
-    cases = json.loads(DATA.read_text())[kind]
+    cases = _vectors()[kind]
     assert len(cases) >= 100
     mismatches = []
     for number, case in enumerate(cases):
         scenario = case["scenario"]
         ours = ENGINE_RUNNERS[kind](scenario)
-        problems = compare_results(ours, case["expected"], scenario["jokers"])
+        problems = compare_results(ours, _json_keys_to_int(case["expected"]), scenario["jokers"])
         if problems:
             mismatches.append((number, problems))
     assert mismatches == []
 
 
+def _vectors() -> dict[str, Any]:
+    return json.loads(gzip.decompress(DATA.read_bytes()))
+
+
 def _load(name: str) -> ModuleType:
+    """Import a harness module by path; its own imports of sibling modules need the
+    harness directory on the import path."""
+    if str(HARNESS) not in sys.path:
+        sys.path.append(str(HARNESS))
     path = HARNESS / f"{name}.py"
     spec = importlib.util.spec_from_file_location(f"lua_harness_{name}", path)
     assert spec is not None
@@ -67,7 +81,8 @@ live = pytest.mark.skipif(
     LUA_DIR is None, reason="BALATRO_LUA_DIR does not point to the game's Lua source"
 )
 VERIFIED_JOKERS = sorted(key for key in JOKERS if key != "j_misprint")
-VERIFIED_SEALS = ("Red", "Gold", "Blue")
+VERIFIED_SEALS = ("Red", "Gold", "Blue", "Purple")
+IMPLEMENTED = set(JOKERS) | set(CONSUMABLES)
 
 
 @pytest.fixture(scope="module")
@@ -96,6 +111,70 @@ def test_random_situations_match(
     ):
         game = run_in_game(lua, scenario)
         problems = compare_results(ENGINE_RUNNERS[kind](scenario), game, scenario["jokers"])
+        if problems:
+            mismatches.append((number, problems))
+    assert mismatches == []
+
+
+def _json_keys_to_int(result: dict[str, Any]) -> dict[str, Any]:
+    """JSON turns the uid keys of ``jokers`` into strings; turn them back."""
+    jokers = result.get("jokers")
+    if isinstance(jokers, dict):
+        return result | {"jokers": {int(uid): values for uid, values in jokers.items()}}
+    return result
+
+
+def test_consumables_match_original_game_vectors() -> None:
+    cases = _vectors()["consumable"]
+    assert len(cases) >= 100
+    mismatches = []
+    for number, case in enumerate(cases):
+        scenario = case["scenario"]
+        problems = compare_consumable_use(
+            scenario, engine_use_consumable(scenario), case["expected"]
+        )
+        if problems:
+            mismatches.append((number, problems))
+    assert mismatches == []
+
+
+def test_shop_matches_original_game_vectors() -> None:
+    cases = _vectors()["shop"]
+    assert len(cases) >= 50
+    mismatches = []
+    for number, case in enumerate(cases):
+        expected = _json_keys_to_int(case["expected"])
+        problems = compare_shop(engine_shop(case["scenario"]), expected, IMPLEMENTED)
+        if problems:
+            mismatches.append((number, problems))
+    assert mismatches == []
+
+
+@live
+def test_random_consumable_uses_match(lua: Any) -> None:
+    scenarios = _load("consumable_scenarios")
+    use_in_game = _load("rules").use_consumable
+    mismatches = []
+    for number, scenario in enumerate(
+        scenarios.random_consumable_scenarios(1, 2000, sorted(CONSUMABLES), VERIFIED_JOKERS)
+    ):
+        problems = compare_consumable_use(
+            scenario, engine_use_consumable(scenario), use_in_game(lua, scenario)
+        )
+        if problems:
+            mismatches.append((number, problems))
+    assert mismatches == []
+
+
+@live
+def test_random_shops_match(lua: Any) -> None:
+    scenarios = _load("consumable_scenarios")
+    shop_in_game = _load("rules").shop
+    mismatches = []
+    for number, scenario in enumerate(
+        scenarios.random_shop_scenarios(1, 800, sorted(JOKERS), sorted(CONSUMABLES))
+    ):
+        problems = compare_shop(engine_shop(scenario), shop_in_game(lua, scenario), IMPLEMENTED)
         if problems:
             mismatches.append((number, problems))
     assert mismatches == []

@@ -8,15 +8,26 @@ from collections.abc import Callable, Sequence
 from typing import Any
 
 from balatro_gym.sim import Game, macros
-from balatro_gym.sim.actions import Action, ContinueEndless, Discard, SelectBlind
+from balatro_gym.sim.actions import (
+    Action,
+    ContinueEndless,
+    Discard,
+    Reroll,
+    SelectBlind,
+    SellJoker,
+    UseConsumable,
+)
+from balatro_gym.sim.content import CENTERS, pool
 from balatro_gym.sim.engine import _end_round as end_round
 from balatro_gym.sim.engine import new_run
 from balatro_gym.sim.events import Event, HandScored
 from balatro_gym.sim.hands import display_name, evaluate_poker_hand
-from balatro_gym.sim.items import new_item
+from balatro_gym.sim.inventory import add_to_deck, remove_from_deck
+from balatro_gym.sim.items import new_item, set_cost
 from balatro_gym.sim.modifiers import scoring_chips
 from balatro_gym.sim.scope import Scope
 from balatro_gym.sim.scoring import evaluate_play, level_up_hand
+from balatro_gym.sim.shop import is_available
 from balatro_gym.sim.state import (
     BlindSlot,
     BlindState,
@@ -178,6 +189,8 @@ def engine_score(scenario: dict[str, Any]) -> dict[str, Any]:
     state.probabilities_normal = scenario["probability"]
     state.hands_left = scenario["hands_left"]
     state.discards_left = scenario["discards_left"]
+    if scenario.get("tarots_used"):
+        state.consumable_usage = {"c_hermit": scenario["tarots_used"]}
     for name, level in scenario["levels"].items():
         hand = HandType(name)
         level_up_hand(Scope(state), hand, level - state.hands[hand].level)
@@ -297,7 +310,7 @@ def engine_discard(scenario: dict[str, Any]) -> dict[str, Any]:
     return {
         "dollars": state.money,
         "jokers": [dict(joker.values) for joker in jokers],
-        "consumables": [item.key for item in state.consumables],
+        "consumables": [CENTERS[item.key].set for item in state.consumables],
     }
 
 
@@ -338,3 +351,177 @@ def _compare_jokers(mine: Any, theirs: Any, jokers: Any) -> list[str]:
         for values, game_values, name in pairs
         if not joker_values_match(values, game_values)
     ]
+
+
+def engine_use_consumable(scenario: dict[str, Any]) -> dict[str, Any]:
+    """Use a consumable in the engine; report what ``rules.use_consumable`` does."""
+    state = new_run("lua-scenario")
+    state.deck.clear()
+    state.money = scenario["dollars"]
+    state.probabilities_normal = scenario["probability"]
+    state.last_tarot_planet = scenario.get("last_tarot_planet")
+    state.phase = Phase(scenario["phase"])
+    scope = Scope(state)
+    for name, level in scenario.get("levels", {}).items():
+        hand = HandType(name)
+        level_up_hand(scope, hand, level - state.hands[hand].level)
+    state.hand = [_scenario_card(card) for card in scenario["held"]]
+    for position in scenario["selected"]:
+        state.hand[position].selected = True
+    jokers = []
+    for joker in scenario["jokers"]:
+        item = new_item(state, joker["key"], edition=joker.get("edition"))
+        item.uid = joker["uid"]
+        item.values.update(joker.get("values", {}))
+        jokers.append(item)
+    state.jokers = list(jokers)
+    others = [new_item(state, key) for key in scenario.get("consumables", [])]
+    state.consumables = [*others, new_item(state, scenario["consumable"])]
+    game = Game(state)
+    action = UseConsumable(len(state.consumables) - 1)
+    if not game.is_legal(action):
+        return {"usable": False}
+    game.step(action)
+    return {
+        "usable": True,
+        "hand": [
+            {
+                "uid": card.uid,
+                "rank": card.rank,
+                "suit": card.suit.value,
+                "enhancement": card.enhancement,
+                "edition": card.edition,
+                "seal": card.seal,
+            }
+            for card in state.hand
+        ],
+        "levels": {hand.value: level.level for hand, level in state.hands.items()},
+        "dollars": state.money,
+        "consumables": [item.key for item in state.consumables],
+        "jokers": [{"key": item.key, "edition": item.edition is not None} for item in state.jokers],
+        "joker_values": [dict(item.values) for item in jokers],
+        "last_tarot_planet": state.last_tarot_planet,
+    }
+
+
+#: Consumables that create random cards: only the kind and count of the created
+#: cards are compared, since the engine's random draws differ from the game's.
+RANDOM_CREATORS = frozenset({"c_emperor", "c_high_priestess", "c_judgement", "c_wheel_of_fortune"})
+
+
+def compare_consumable_use(
+    scenario: dict[str, Any], ours: dict[str, Any], game: dict[str, Any]
+) -> list[str]:
+    """Differences between the engine's and the game's results of using a consumable."""
+    if ours["usable"] != game["usable"]:
+        return [f"usable {ours['usable']} vs {game['usable']}"]
+    if not game["usable"]:
+        return []
+    problems = [
+        f"{field} {ours[field]} vs {game[field]}"
+        for field in ("hand", "levels", "dollars", "last_tarot_planet")
+        if ours[field] != game[field]
+    ]
+    random_creation = scenario["consumable"] in RANDOM_CREATORS
+    for field, describe in (
+        ("consumables", lambda key: CENTERS[key].set if random_creation else key),
+        ("jokers", lambda joker: joker["key"] if not random_creation else "joker"),
+    ):
+        mine = sorted(map(describe, ours[field]))
+        theirs = sorted(map(describe, game[field]))
+        if mine != theirs:
+            problems.append(f"{field} {mine} vs {theirs}")
+    our_editions = [joker["edition"] for joker in ours["jokers"]]
+    game_editions = [joker["edition"] for joker in game["jokers"]]
+    if scenario["consumable"] in RANDOM_CREATORS:
+        # The Wheel of Fortune picks a random joker, and Judgement's joker may
+        # roll an edition: compare how many jokers have one.
+        our_editions, game_editions = [sum(our_editions)], [sum(game_editions)]
+        if scenario["consumable"] == "c_judgement":
+            our_editions = game_editions
+    if our_editions != game_editions:
+        problems.append(f"joker editions {ours['jokers']} vs {game['jokers']}")
+    problems.extend(_compare_jokers(ours["joker_values"], game["joker_values"], scenario["jokers"]))
+    return problems
+
+
+def engine_shop(scenario: dict[str, Any]) -> dict[str, Any]:
+    """Run a shop scenario through the engine; report what ``rules.shop`` does."""
+    state = new_run("lua-scenario")
+    state.deck.clear()
+    state.money = scenario["dollars"]
+    state.inflation = scenario["inflation"]
+    state.discount_percent = scenario["discount"]
+    state.discards_per_round = state.discards_left = 3
+    state.phase = Phase.SHOP
+    for name in scenario["played_hands"]:
+        state.hands[HandType(name)].played = 1
+    for flag in scenario["pool_flags"]:
+        state.pool_flags[flag] = True
+    jokers = []
+    for joker in scenario["jokers"]:
+        item = new_item(state, joker["key"], edition=joker.get("edition"))
+        item.uid = joker["uid"]
+        item.rental = joker.get("rental", False)
+        item.values.update(joker.get("values", {}))
+        set_cost(state, item)
+        jokers.append(item)
+    state.jokers = list(jokers)
+    state.consumables = [new_item(state, key) for key in scenario["consumables"]]
+
+    pools = {
+        f"Joker{rarity}": sorted(c.key for c in pool("Joker", rarity) if is_available(state, c))
+        for rarity in (1, 2, 3)
+    }
+    for set_name in ("Tarot", "Planet"):
+        pools[set_name] = sorted(c.key for c in pool(set_name) if is_available(state, c))
+    prices = [[item.cost, item.sell_value] for item in jokers]
+
+    def run_numbers() -> dict[str, int]:
+        return {
+            "hand_size": state.hand_size,
+            "discards_per_round": state.discards_per_round,
+            "discards_left": state.discards_left,
+            "bankrupt_at": state.bankrupt_at,
+            "free_rerolls": state.free_rerolls,
+            "reroll_cost": state.reroll_cost,
+        }
+
+    scope = Scope(state)
+    gained = new_item(state, scenario["gained"])
+    add_to_deck(scope, gained)
+    after_gain = run_numbers()
+    remove_from_deck(scope, gained)
+    after_loss = run_numbers()
+    game = Game(state)
+    for _ in range(scenario.get("rerolls", 0)):
+        if not game.is_legal(Reroll()):
+            break
+        game.step(Reroll())
+    reroll_cost = state.reroll_cost
+    if scenario["sell"] is not None:
+        game.step(SellJoker(scenario["sell"]))
+    return {
+        "pools": pools,
+        "prices": prices,
+        "after_gain": after_gain,
+        "after_loss": after_loss,
+        "reroll_cost": reroll_cost,
+        "dollars": state.money,
+        "jokers": {joker.uid: dict(joker.values) for joker in state.jokers},
+    }
+
+
+def compare_shop(ours: dict[str, Any], game: dict[str, Any], implemented: set[str]) -> list[str]:
+    """Differences in a shop scenario. The game's pools are narrowed to the items the
+    engine implements, which are the only ones it offers (ADR 0003)."""
+    problems = []
+    for name, keys in game["pools"].items():
+        expected = sorted(key for key in keys if key in implemented)
+        if ours["pools"][name] != expected:
+            problems.append(f"pool {name}: {ours['pools'][name]} vs {expected}")
+    for field in ("prices", "after_gain", "after_loss", "reroll_cost", "dollars"):
+        if ours[field] != game[field]:
+            problems.append(f"{field} {ours[field]} vs {game[field]}")
+    problems.extend(_compare_jokers(ours["jokers"], game["jokers"], None))
+    return problems

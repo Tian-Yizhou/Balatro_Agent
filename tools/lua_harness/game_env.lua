@@ -127,7 +127,7 @@ function harness_card(spec)
   card.params = {playing_card = spec.playing_card}
   -- Sprites and buttons are UI; any access to them is absorbed.
   card.children = setmetatable({}, {__index = function() return harness.anything end})
-  card.states = {visible = true, drag = {is = false}, collide = {}, hover = {}, click = {}}
+  card.states = {visible = true, drag = {is = false}, collide = {}, hover = {}, click = {}, focus = {}}
   card.ID, card.sort_id = spec.id, spec.id
   card.unique_val = 1 - spec.id / 1603301
   card.base_cost, card.extra_cost, card.cost, card.sell_cost = 0, 0, 0, 0
@@ -205,7 +205,7 @@ function Card:set_sprites()
   self.children.center = self.children.center or harness.anything
   self.children.back = self.children.back or harness.anything
 end
-for _, name in ipairs({"juice_up", "start_materialize", "flip", "hard_set_T",
+for _, name in ipairs({"juice_up", "update_alert", "start_materialize", "flip", "hard_set_T",
   "calculate_parrallax", "highlight", "set_card_area"}) do
   Card[name] = harness.noop
 end
@@ -244,7 +244,8 @@ getmetatable(harness.anything).__newindex = function() end
 getmetatable(harness.anything).__index = function() return harness.anything end
 getmetatable(harness.anything).__call = function() return harness.anything end
 G.HUD, G.HUD_blind, G.ROOM = harness.anything, harness.anything, harness.anything
-G.CONTROLLER = harness.anything
+G.CONTROLLER = setmetatable({locked = false, locks = {}, interrupt = {}},
+  {__index = function() return harness.anything end})
 
 -- Profile statistics the round code updates; they don't affect the run.
 G.PROFILES = {{
