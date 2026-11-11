@@ -45,7 +45,7 @@ like Lucky.
 | # | Decision | Status |
 |---|----------|--------|
 | D1 | No seed parity with the real game. We use our own deterministic RNG, whose state is part of every snapshot (§4.5). | decided |
-| D2 | The engine is written in Python. A Rust core is reconsidered only if the M2 benchmark shows it is needed. | decided |
+| D2 | The engine is written in Python. A Rust core is reconsidered only if the M2 benchmark shows it is needed. At the M2 checkpoint (about 28,600 steps/s per core with a shop-using player) the maintainer chose to stay with Python. | decided |
 | D3 | Distribute **games**, not steps (§6). | decided |
 | D4 | The agent interface uses UI-like atomic actions (§4.3). | decided |
 | D5 | Reordering jokers is an action. | decided |
@@ -483,6 +483,7 @@ Applied in M0 through the GitHub API:
   - Python 3.11 or newer, managed with `uv` and a lockfile (D15). CI runs on
     3.11–3.13. LuaJIT for the test harness comes from the `lupa` package (ADR 0002).
   - Full type hints in `sim`.
+  - Descriptive names in whole words (`CONTRIBUTING.md` §5).
   - `ruff` for linting and formatting.
   - Strict type checking in `sim` with `pyright` (D13).
 - **Inside `sim`:**

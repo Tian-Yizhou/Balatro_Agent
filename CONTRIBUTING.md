@@ -245,7 +245,29 @@ The author confirms all of these. They don't go in the description.
 
 ---
 
-## 5. AI-assisted changes
+## 5. Naming
+
+Code is read far more often than it is written. Every name says what the thing
+is, in full words, so a reader never has to decode it.
+
+- Use whole words: `context`, `joker`, `scoring_cards`, `randomizer`; not `ctx`,
+  `j`, `sc`, `rnd`.
+- No single-letter names, except `i` for an integer index in a loop of a few lines.
+  Name loop variables after what they hold: `for card in hand`, not `for c in hand`.
+- Abbreviations are allowed only when they are better known than the full words:
+  `id`, `uid`, `rng` (random number generator), `min`, `max`, `json`; and the
+  game's own terms, such as `ante`, `chips`, `mult` and `x_mult`.
+- Import names, not short module aliases: `from balatro_gym.sim.events import
+  HandScored`, not `from balatro_gym.sim import events as ev`.
+- Functions are named for what they do (`score_held_card`), and booleans read as
+  statements (`is_face`, `has_room`).
+- Keys from the game's data, such as the config field `t_mult` or the random
+  stream `"cdt1"`, keep the game's spelling so they can be found in its source. The
+  code around them uses descriptive names, with a comment where a key is cryptic.
+
+---
+
+## 6. AI-assisted changes
 
 - All the rules above apply unchanged.
 - An AI assistant may open PRs and make direct commits as §1 allows. It never merges
