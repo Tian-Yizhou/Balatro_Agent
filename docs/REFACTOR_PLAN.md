@@ -82,7 +82,7 @@ The ADR index (`docs/adr/README.md`) lists these decisions. Later decisions get 
 | Package | Responsibility | Runtime deps |
 |---|---|---|
 | `sim` | The deterministic engine: `(state, action) → events`, changing the state in place (ADR 0001) | standard library only |
-| `replay` | Replay file format, recorder, re-simulation, text renderer | `sim` (+ zstd, optional) |
+| `replay` | Replay file format, recorder, re-simulation, text renderer | `sim` |
 | `env` | Observation encoders, action codec, Gymnasium env, vectorized env, rewards, difficulty presets | `sim`, `replay`, numpy, gymnasium |
 | `serve` | Dispatcher, remote step server, Ray integration | `sim`, `env`, `replay` (+ ray / grpc, optional) |
 | `agents/` | Baselines and training code (later, ported from v1) | everything above + torch / ray |
@@ -341,7 +341,7 @@ flag exists for research baselines that should see everything.
   - the initial state;
   - the atomic actions;
   - **keyframe** snapshots at the start of each round (the interval is configurable,
-    or keyframes can be turned off);
+    or keyframes can be turned off), plus the final state;
   - optional per-step **annotations**: the agent's top-k action probabilities, its
     value estimate, or an LLM's reasoning text.
 - **Using a replay:**
@@ -350,9 +350,12 @@ flag exists for research baselines that should see everything.
   - `Replay.branch(step)` returns a live game you can keep playing ("what if it had
     discarded here?").
   - `Game.from_snapshot(...)` resumes from any saved state.
-- **Drift check:** on load, the engine re-simulates the game and checks each keyframe
+- **Files** are JSON, gzip-compressed when the name ends in `.json.gz`. A full game
+  with round keyframes takes a few KB compressed.
+- **Drift check:** `Replay.verify()` re-simulates the game and checks each keyframe
   still matches. A mismatch means the engine's behavior changed since recording.
-- **Viewers:** a CLI text renderer comes first (M1); a web viewer comes later (M9).
+- **Viewers:** a CLI text renderer comes first (M1: `python -m balatro_gym.replay`);
+  a web viewer comes later (M9).
   The web viewer steps through rounds and shows the hand, jokers, shop, a scoring
   breakdown built from events, and the agent's annotations.
 - **Golden replays** are committed under `tests/golden/` and lock in behavior: any
