@@ -218,9 +218,9 @@ Follow-up work is tracked in issues.
 ### 4.4 Size and scope
 
 - A PR delivers one feature or capability, complete and tested.
-- Keep it reviewable in one sitting. Split work beyond roughly 1,000 changed lines
-  of code (not counting lockfiles, generated data and test fixtures) into a series
-  of PRs.
+- Size is a guideline, not a limit: aim for at most about 2,000 changed lines of
+  non-test code. Tests, lockfiles, generated data and fixtures don't count. Split
+  larger work where it divides naturally.
 - Open the PR when the work is done. Use a draft PR only to get early feedback.
 
 ### 4.5 Before opening a PR
