@@ -1,6 +1,6 @@
 # Balatro-Agent v2: Refactor Plan
 
-> **Status:** agreed · M0 done (PR #1) · M1 done (PRs #4, #5) · **Last updated:** 2026-11-10
+> **Status:** agreed · M0 done (PR #1) · M1 done (PRs #4, #5) · M2 in progress · **Last updated:** 2026-11-10
 >
 > Decisions are listed in §2. Any new open questions go in §12, and nothing open is
 > built until it is agreed.
@@ -191,9 +191,12 @@ These are the canonical actions. Agents send them, and replays record them.
   copy effects by running the copied joker's effect within these same contexts.
 - **Content is data plus effect functions:**
   - **Data** (costs, rarities, config values, pools, unlock conditions) is extracted
-    once from `game.lua` by a script in `tools/extract_content/`. Only the resulting
-    numbers and keys are committed. Lua code and the game's localization text are
-    never copied; we write our own short descriptions.
+    once from `game.lua` by `tools/extract_content/extract.py` into
+    `src/balatro_gym/sim/data/content.json`. Only the resulting numbers, keys and
+    item names are committed. Lua code and the game's localization text are never
+    copied; we write our own short descriptions.
+  - **Until an item's effect is implemented it is unavailable,** as if locked
+    (ADR 0003).
   - **Effects:** one Python function per item, grouped by mechanism. Each docstring
     cites its Lua source (for example, `Lua: card.lua Card:calculate_joker "Blueprint"`).
 
@@ -512,9 +515,9 @@ Applied in M0 through the GitHub API:
 |---|---|---|
 | **M0** | Repo refactor and development rules (§10): layout, `pyproject`, tooling, `.github/`, CONTRIBUTING, CLAUDE.md, ADR index, legacy removed, Lua untracked | CI is green on the empty skeleton; branch protection is on; merged to `main` |
 | **M1** | Engine foundations: state model, keyed RNG, snapshot/restore, events, the atomic and macro action framework, the round loop with plain cards, replay format, recorder and text renderer, Lua harness | Snapshots round-trip; replays are deterministic; Lua differential tests pass for hand evaluation and blind amounts |
-| **M2** | The scoring pipeline with full context dispatch, a weighted shop (jokers, tarots, planets) with buying and selling, run options (`max_ante`, endless) | Random agents finish full games; **throughput benchmark → Python/Rust checkpoint** |
-| **M3** | Card modifiers, consumables, packs and the pack phase, vouchers, tags with skipping, all bosses, decks, stakes and stickers | Scenario tests for every item |
-| **M4** | All 150 jokers, in batches by mechanism: passive → conditional → scaling → retrigger → copy → economy → create/destroy → probability | Scenario tests for every joker |
+| **M2** | Content data extraction; the scoring pipeline with full context dispatch; enhancements, editions and seals; a starter set of jokers covering every context; a weighted shop (jokers, tarots, planets) with buying, selling and rerolls; all planets and tarots; run options (`max_ante`, endless) | Random agents finish full games; **throughput benchmark → Python/Rust checkpoint** |
+| **M3** | Spectral cards, packs and the pack phase, vouchers, tags with skipping, all bosses, decks, stakes and stickers | Scenario tests for every item |
+| **M4** | The remaining jokers, in batches by mechanism: passive → conditional → scaling → retrigger → copy → economy → create/destroy → probability | Scenario tests for every joker |
 | **M5** | Profiles and unlock progression (the all-unlocked default exists from M2) | Progression runs from a fresh profile; the profile-merge rules are tested |
 | **M6** | Validation hardening: nightly fuzzing, statistical checks, more golden replays | Nightly job is green |
 | **M7** | Env layer: encoders, action codec, Gymnasium env, vectorized env, rewards, difficulty presets | Benchmark results; random and heuristic baselines |
