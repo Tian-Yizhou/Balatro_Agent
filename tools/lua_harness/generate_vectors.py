@@ -22,6 +22,20 @@ from harness import (
     parse_cards,
     random_hand_cases,
 )
+from rules import LuaRules, discard, end_of_round, score
+from scoring_scenarios import (
+    random_discard_scenarios,
+    random_round_end_scenarios,
+    random_scoring_scenarios,
+)
+
+from balatro_gym.sim.effects import JOKERS
+
+#: Jokers compared against the game. Misprint's mult is random, so it is checked
+#: separately, by range.
+VERIFIED_JOKERS = sorted(key for key in JOKERS if key != "j_misprint")
+#: Seals whose effects the engine implements.
+VERIFIED_SEALS = ("Red", "Gold", "Blue")
 
 OUT_DIR = Path(__file__).resolve().parents[2] / "tests" / "sim" / "data"
 
@@ -73,6 +87,20 @@ def main() -> int:
         for scaling in (1, 2, 3)
     }
     _write("lua_blind_amounts.json", {"first_ante": -1, "amounts": amounts})
+
+    rules = LuaRules(lua_dir)
+    runs = (
+        ("scoring", score, random_scoring_scenarios, 200),
+        ("round_end", end_of_round, random_round_end_scenarios, 120),
+        ("discard", discard, random_discard_scenarios, 120),
+    )
+    payload: dict[str, object] = {}
+    for name, run, scenarios, count in runs:
+        payload[name] = [
+            {"scenario": scenario, "expected": run(rules, scenario)}
+            for scenario in scenarios(20261111, count, VERIFIED_JOKERS, seals=VERIFIED_SEALS)
+        ]
+    _write("lua_rules.json", payload)
     return 0
 
 

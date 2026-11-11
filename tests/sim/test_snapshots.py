@@ -13,8 +13,8 @@ from balatro_gym.sim import (
     restore,
     snapshot,
 )
-from balatro_gym.sim import actions as act
-from balatro_gym.sim import events as ev
+from balatro_gym.sim.actions import Discard, SelectBlind, ToggleCard
+from balatro_gym.sim.events import EVENT_TYPES, CardsDrawn, event_to_data
 from balatro_gym.sim.serialize import from_data, to_data
 from scenarios import greedy_policy, play_game, started_round
 
@@ -30,9 +30,9 @@ def test_snapshot_round_trips_through_json() -> None:
 def test_restored_game_continues_identically() -> None:
     game = started_round("continue")
     copy = Game.from_snapshot(json.loads(json.dumps(game.snapshot())))
-    for g in (game, copy):
-        g.step(act.ToggleCard(0))
-        g.step(act.Discard())
+    for each in (game, copy):
+        each.step(ToggleCard(0))
+        each.step(Discard())
     assert game.snapshot() == copy.snapshot()
 
 
@@ -40,7 +40,7 @@ def test_clone_is_independent() -> None:
     game = started_round("clone")
     copy = game.clone()
     assert copy.state == game.state
-    copy.step(act.ToggleCard(0))
+    copy.step(ToggleCard(0))
     assert copy.state != game.state
     assert not game.state.hand[0].selected
 
@@ -57,14 +57,14 @@ def test_determinize_keeps_visible_state_and_hides_the_future() -> None:
     game = started_round("det")
     state = game.state
     other = determinize(state, 1)
-    assert [c.uid for c in other.hand] == [c.uid for c in state.hand]
+    assert [card.uid for card in other.hand] == [card.uid for card in state.hand]
     assert (other.money, other.ante, other.blind_choices) == (
         state.money,
         state.ante,
         state.blind_choices,
     )
-    assert sorted(c.uid for c in other.deck) == sorted(c.uid for c in state.deck)
-    assert [c.uid for c in other.deck] != [c.uid for c in state.deck]
+    assert sorted(card.uid for card in other.deck) == sorted(card.uid for card in state.deck)
+    assert [card.uid for card in other.deck] != [card.uid for card in state.deck]
     assert determinize(state, 1) == other
     assert determinize(state, 2) != other
 
@@ -89,12 +89,12 @@ def test_malformed_snapshot() -> None:
 
 def test_events_serialize() -> None:
     game = Game.new("events")
-    for event in game.step(act.SelectBlind()):
-        data = ev.event_to_data(event)
+    for event in game.step(SelectBlind()):
+        data = event_to_data(event)
         assert data["kind"] == event.kind
-        restored = from_data(ev.EVENT_TYPES[data.pop("kind")], data)
+        restored = from_data(EVENT_TYPES[data.pop("kind")], data)
         assert restored == event
-    assert to_data(ev.CardsDrawn((1, 2))) == {"uids": [1, 2]}
+    assert to_data(CardsDrawn((1, 2))) == {"uids": [1, 2]}
 
 
 def test_snapshot_is_small() -> None:

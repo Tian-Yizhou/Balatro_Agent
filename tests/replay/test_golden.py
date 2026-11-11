@@ -28,9 +28,9 @@ GAMES: dict[str, tuple[str, Policy]] = {
 def record(seed: str, policy: Policy) -> Replay:
     game = Game.new(seed)
     recorder = Recorder(game, game_id=seed, metadata={"policy": policy.__name__})
-    rnd = random.Random(seed)
+    randomizer = random.Random(seed)
     while not game.is_over:
-        for action in policy(game, rnd):
+        for action in policy(game, randomizer):
             recorder.step(action)
     return recorder.replay()
 

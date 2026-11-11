@@ -7,7 +7,7 @@ import pytest
 from balatro_gym.replay import Recorder, Replay, render_replay, render_state
 from balatro_gym.replay.__main__ import main
 from balatro_gym.sim import Game, macros
-from balatro_gym.sim import actions as act
+from balatro_gym.sim.actions import CashOut, MoveCard, SelectBlind, SortBySuit, ToggleCard
 from balatro_gym.sim.state import HandType
 from scenarios import set_hand, started_round
 
@@ -18,14 +18,14 @@ def replay_file(tmp_path: Path) -> Path:
     for level in game.state.hands.values():
         level.mult = 1000  # any hand beats the blind; part of the recorded initial state
     recorder = Recorder(game, game_id="render-1")
-    recorder.step(act.SelectBlind())
-    recorder.step(act.SortBySuit())
-    recorder.step(act.MoveCard(0, 1))
+    recorder.step(SelectBlind())
+    recorder.step(SortBySuit())
+    recorder.step(MoveCard(0, 1))
     for action in macros.discard_cards(game.state, [2]):
         recorder.step(action)
     for action in macros.play_cards(game.state, [0, 1]):
         recorder.step(action, annotation={"value": 0.5})
-    recorder.step(act.CashOut())
+    recorder.step(CashOut())
     path = tmp_path / "render.json.gz"
     recorder.replay().save(path)
     return path
@@ -36,8 +36,8 @@ def test_state_views() -> None:
     text = render_state(game.state)
     assert "Ante 1 · Round 0 · blind select" in text
     assert "> Small Blind (select)" in text
-    game.step(act.SelectBlind())
-    game.step(act.ToggleCard(0))
+    game.step(SelectBlind())
+    game.step(ToggleCard(0))
     text = render_state(game.state)
     assert "Small Blind · score 0 / 300" in text
     assert "[" in text

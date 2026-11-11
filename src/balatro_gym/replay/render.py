@@ -8,8 +8,29 @@ from collections.abc import Callable, Iterable
 from typing import Any, Literal
 
 from balatro_gym.sim import Event, Phase, RunState
-from balatro_gym.sim import events as ev
 from balatro_gym.sim.blinds import BLINDS
+from balatro_gym.sim.events import (
+    AnteChanged,
+    BlindSelected,
+    BossChosen,
+    CardDestroyed,
+    CardMoved,
+    CardRetriggered,
+    CardsDiscarded,
+    CardsDrawn,
+    CardToggled,
+    EffectApplied,
+    HandLevelChanged,
+    HandPlayed,
+    HandScored,
+    HandSorted,
+    JokerDestroyed,
+    JokerMoved,
+    MoneyChanged,
+    PhaseChanged,
+    RoundEnded,
+    RunEnded,
+)
 from balatro_gym.sim.state import BlindSlot, BlindStatus, HandSort, PlayingCard
 
 from .format import Replay, Step
@@ -35,8 +56,8 @@ def render_state(state: RunState) -> str:
     if state.consumables:
         lines.append("Items   " + " ".join(item.key for item in state.consumables))
     if state.phase is Phase.ROUND_EVAL:
-        rows = " + ".join(f"{p.source} ${p.dollars}" for p in state.payouts)
-        lines.append(f"Cash out  {rows} = ${sum(p.dollars for p in state.payouts)}")
+        rows = " + ".join(f"{payout.source} ${payout.dollars}" for payout in state.payouts)
+        lines.append(f"Cash out  {rows} = ${sum(payout.dollars for payout in state.payouts)}")
     return "\n".join(lines)
 
 
@@ -83,7 +104,7 @@ def render_replay(
         out.append(_indent(render_state(replay.state_at(start))))
     for step in replay.steps(start, stop):
         out.append(render_step(step))
-        changed = any(isinstance(event, ev.PhaseChanged) for event in step.events)
+        changed = any(isinstance(event, PhaseChanged) for event in step.events)
         if states == "all" or (states == "phases" and changed):
             out.append(_indent(render_state(step.state)))
     return "\n".join(out)
@@ -131,19 +152,38 @@ def _indent(text: str) -> str:
     return "\n".join(f"  | {line}" for line in text.splitlines())
 
 
-def _money(event: ev.MoneyChanged, labels: dict[int, str]) -> str:
+def _money(event: MoneyChanged, labels: dict[int, str]) -> str:
     sign = "+" if event.delta >= 0 else "-"
     reason = event.reason.replace("_", " ")
     return f"{sign}${abs(event.delta)} from {reason} (now ${event.balance})"
 
 
-def _round_ended(event: ev.RoundEnded, labels: dict[int, str]) -> str:
+def _effect(event: EffectApplied, labels: dict[int, str]) -> str:
+    parts = []
+    if event.chips:
+        parts.append(f"{event.chips:+g} chips")
+    if event.mult:
+        parts.append(f"{event.mult:+g} mult")
+    if event.x_mult != 1:
+        parts.append(f"x{event.x_mult:g} mult")
+    if event.dollars:
+        parts.append(f"{event.dollars:+d} $")
+    from_card = event.key in ("card", "held")
+    source = labels.get(event.source, event.key) if from_card else event.key
+    if not from_card and event.target is not None:
+        source += f" on {_names([event.target], labels)}"
+    if event.via is not None:
+        source += " (copied)"
+    return f"  {source}: {', '.join(parts)}"
+
+
+def _round_ended(event: RoundEnded, labels: dict[int, str]) -> str:
     name = BLINDS[event.blind].name
     result = "Beat" if event.won else "Lost to"
     return f"{result} the {name}: {_number(event.score)} / {_number(event.target)}"
 
 
-def _hand_scored(event: ev.HandScored, labels: dict[int, str]) -> str:
+def _hand_scored(event: HandScored, labels: dict[int, str]) -> str:
     return (
         f"{event.hand.value}: {_number(event.chips)} chips x {_number(event.mult)} mult"
         f" = {_number(event.score)} (round score {_number(event.total)})"
@@ -151,29 +191,42 @@ def _hand_scored(event: ev.HandScored, labels: dict[int, str]) -> str:
 
 
 _FORMATTERS: dict[type[Event], Callable[[Any, dict[int, str]], str]] = {
-    ev.BossChosen: lambda e, _: f"Boss for ante {e.ante}: {BLINDS[e.boss].name}",
-    ev.BlindSelected: lambda e, _: (
-        f"Selected the {BLINDS[e.blind].name}: score {_number(e.target)} to win"
+    BossChosen: lambda event, _: f"Boss for ante {event.ante}: {BLINDS[event.boss].name}",
+    BlindSelected: lambda event, _: (
+        f"Selected the {BLINDS[event.blind].name}: score {_number(event.target)} to win"
     ),
-    ev.CardsDrawn: lambda e, labels: f"Drew {_names(e.uids, labels)}",
-    ev.CardToggled: lambda e, labels: (
-        f"{'Selected' if e.selected else 'Deselected'} {_names([e.uid], labels)}"
+    CardsDrawn: lambda event, labels: f"Drew {_names(event.uids, labels)}",
+    CardToggled: lambda event, labels: (
+        f"{'Selected' if event.selected else 'Deselected'} {_names([event.uid], labels)}"
     ),
-    ev.CardMoved: lambda e, labels: (
-        f"Moved {_names([e.uid], labels)} from position {e.source} to {e.target}"
+    CardMoved: lambda event, labels: (
+        f"Moved {_names([event.uid], labels)} from position {event.source} to {event.target}"
     ),
-    ev.JokerMoved: lambda e, _: f"Moved joker #{e.uid} from position {e.source} to {e.target}",
-    ev.HandSorted: lambda e, _: (
-        f"Sorted the hand by {'suit' if e.mode is HandSort.SUIT else 'rank'}"
+    JokerMoved: lambda event, _: (
+        f"Moved joker #{event.uid} from position {event.source} to {event.target}"
     ),
-    ev.HandPlayed: lambda e, labels: (
-        f"Played {_names(e.uids, labels)}: {e.hand.value}, scoring {_names(e.scoring, labels)}"
+    HandSorted: lambda event, _: (
+        f"Sorted the hand by {'suit' if event.mode is HandSort.SUIT else 'rank'}"
     ),
-    ev.CardScored: lambda e, labels: f"  {_names([e.uid], labels)} +{_number(e.chips)} chips",
-    ev.HandScored: _hand_scored,
-    ev.CardsDiscarded: lambda e, labels: f"Discarded {_names(e.uids, labels)}",
-    ev.RoundEnded: _round_ended,
-    ev.AnteChanged: lambda e, _: f"Reached ante {e.ante}",
-    ev.MoneyChanged: _money,
-    ev.RunEnded: lambda e, _: f"Run {'won' if e.won else 'lost'} at ante {e.ante}, round {e.round}",
+    HandPlayed: lambda event, labels: (
+        f"Played {_names(event.uids, labels)}: {event.hand.value},"
+        f" scoring {_names(event.scoring, labels)}"
+    ),
+    EffectApplied: lambda event, labels: _effect(event, labels),
+    CardRetriggered: lambda event, labels: (
+        f"  {_names([event.uid], labels)} retriggered by {event.key}"
+    ),
+    CardDestroyed: lambda event, labels: (
+        f"{_names([event.uid], labels)} destroyed ({event.reason})"
+    ),
+    JokerDestroyed: lambda event, _: f"{event.key} destroyed ({event.reason})",
+    HandLevelChanged: lambda event, _: f"{event.hand.value} is now level {event.level}",
+    HandScored: _hand_scored,
+    CardsDiscarded: lambda event, labels: f"Discarded {_names(event.uids, labels)}",
+    RoundEnded: _round_ended,
+    AnteChanged: lambda event, _: f"Reached ante {event.ante}",
+    MoneyChanged: _money,
+    RunEnded: lambda event, _: (
+        f"Run {'won' if event.won else 'lost'} at ante {event.ante}, round {event.round}"
+    ),
 }

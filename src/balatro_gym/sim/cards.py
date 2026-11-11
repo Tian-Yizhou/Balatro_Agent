@@ -1,7 +1,7 @@
 """Rank, suit and ordering rules for playing cards.
 
 Source: card.lua ``Card:set_base``, ``Card:get_id``, ``Card:get_nominal``,
-``Card:get_chip_bonus`` and ``Card:is_suit``.
+and ``Card:is_suit``.
 """
 
 from __future__ import annotations
@@ -15,7 +15,6 @@ __all__ = [
     "SUITS_IN_FLUSH_ORDER",
     "WILD",
     "card_id",
-    "chip_bonus",
     "is_suit_for_flush",
     "nominal",
     "sort_key",
@@ -28,7 +27,7 @@ WILD = "m_wild"
 SUITS_IN_FLUSH_ORDER = (Suit.SPADES, Suit.HEARTS, Suit.CLUBS, Suit.DIAMONDS)
 
 # Card:set_base. Ranks 11-14 are Jack, Queen, King and Ace.
-_NOMINAL = {r: r for r in range(2, 11)} | {11: 10, 12: 10, 13: 10, 14: 11}
+_NOMINAL = {rank: rank for rank in range(2, 11)} | {11: 10, 12: 10, 13: 10, 14: 11}
 _FACE_NOMINAL = {11: 0.1, 12: 0.2, 13: 0.3, 14: 0.4}
 _SUIT_NOMINAL = {Suit.DIAMONDS: 0.01, Suit.CLUBS: 0.02, Suit.HEARTS: 0.03, Suit.SPADES: 0.04}
 _SUIT_NOMINAL_ORIGINAL = {
@@ -55,13 +54,6 @@ def card_id(card: PlayingCard) -> int | None:
     if card.enhancement == STONE:
         return None
     return card.rank
-
-
-def chip_bonus(card: PlayingCard) -> int:
-    """Chips a card adds when it scores (``Card:get_chip_bonus``)."""
-    if card.debuffed:
-        return 0
-    return _NOMINAL[card.rank] + card.perma_bonus
 
 
 def is_suit_for_flush(card: PlayingCard, suit: Suit, *, smeared: bool = False) -> bool:

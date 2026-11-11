@@ -33,6 +33,8 @@ uv run pyright
 - `sim` uses only the standard library. It has no global mutable state, no wall
   clock, no unseeded randomness, and never uses the built-in `hash()` for values
   that are saved. All state is plain, serializable data.
+- Names are whole words, never cryptic shorthand (`context`, not `ctx`); see
+  CONTRIBUTING.md §5.
 - Ported rules cite their source location in the docstring, for example
   `Source: card.lua Card:calculate_joker ("Blueprint")`. Never copy code or text
   word for word.

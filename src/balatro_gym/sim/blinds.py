@@ -91,16 +91,16 @@ _BASE_AMOUNTS = {
 }
 
 
-def lua_floor(x: float) -> float:
+def lua_floor(number: float) -> float:
     """``math.floor`` on a Lua number: infinities and NaN pass through unchanged."""
-    if math.isfinite(x):
-        return float(math.floor(x))
-    return x
+    if math.isfinite(number):
+        return float(math.floor(number))
+    return number
 
 
-def lua_mod(a: float, b: float) -> float:
-    """Lua's ``a % b`` on numbers: ``a - floor(a / b) * b``."""
-    return a - lua_floor(a / b) * b
+def lua_mod(dividend: float, divisor: float) -> float:
+    """Lua's ``dividend % divisor`` on numbers: ``a - floor(a / b) * b``."""
+    return dividend - lua_floor(dividend / divisor) * divisor
 
 
 def get_blind_amount(ante: int, scaling: int = 1) -> float:
@@ -114,9 +114,12 @@ def get_blind_amount(ante: int, scaling: int = 1) -> float:
         return 100.0
     if ante <= 8:
         return float(amounts[ante - 1])
-    k = 0.75
-    a, b, c, d = float(amounts[7]), 1.6, float(ante - 8), 1 + 0.2 * (ante - 8)
-    amount = lua_floor(a * _lua_pow(b + _lua_pow(k * c, d), c))
+    # The game's formula: a * (b + (k * c) ^ d) ^ c, with c the antes past 8.
+    ante_8_amount = float(amounts[7])
+    antes_past_8 = float(ante - 8)
+    exponent = 1 + 0.2 * (ante - 8)
+    growth = 1.6 + _lua_pow(0.75 * antes_past_8, exponent)
+    amount = lua_floor(ante_8_amount * _lua_pow(growth, antes_past_8))
     magnitude = _lua_log10(amount) - 1
     return amount - lua_mod(amount, _lua_pow(10.0, lua_floor(magnitude)))
 
@@ -140,10 +143,12 @@ def choose_boss(
         if not info.boss or info.key in banned:
             continue
         if info.showdown:
-            ok = ante % win_ante == 0 and ante >= 2
+            is_eligible = ante % win_ante == 0 and ante >= 2
         else:
-            ok = info.boss_min <= effective_ante and (effective_ante % win_ante != 0 or ante < 2)
-        if ok:
+            is_eligible = info.boss_min <= effective_ante and (
+                effective_ante % win_ante != 0 or ante < 2
+            )
+        if is_eligible:
             eligible[info.key] = bosses_used.get(info.key, 0)
     fewest = min(eligible.values())
     candidates = sorted(key for key, uses in eligible.items() if uses <= fewest)
@@ -152,12 +157,12 @@ def choose_boss(
     return boss
 
 
-def _lua_log10(x: float) -> float:
-    if math.isnan(x):
-        return x
-    if x == math.inf:
+def _lua_log10(number: float) -> float:
+    if math.isnan(number):
+        return number
+    if number == math.inf:
         return math.inf
-    return math.log10(x)
+    return math.log10(number)
 
 
 def _lua_pow(base: float, exponent: float) -> float:

@@ -15,8 +15,8 @@ def test_stable_hash_never_changes() -> None:
 
 
 def test_draws_are_reproducible() -> None:
-    a, b = Rng("seed"), Rng("seed")
-    assert [a.random("k") for _ in range(10)] == [b.random("k") for _ in range(10)]
+    first, second = Rng("seed"), Rng("seed")
+    assert [first.random("k") for _ in range(10)] == [second.random("k") for _ in range(10)]
 
 
 def test_draws_never_change() -> None:
@@ -27,10 +27,10 @@ def test_draws_never_change() -> None:
 
 
 def test_streams_are_independent() -> None:
-    a, b = Rng("seed"), Rng("seed")
+    busy, idle = Rng("seed"), Rng("seed")
     for _ in range(100):
-        a.random("other")
-    assert a.random("boss") == b.random("boss")
+        busy.random("other")
+    assert busy.random("boss") == idle.random("boss")
 
 
 def test_seeds_differ() -> None:
@@ -58,13 +58,13 @@ def test_randint_bounds_and_coverage() -> None:
     rng = Rng("seed")
     counts = Counter(rng.randint("d", 1, 6) for _ in range(6000))
     assert set(counts) == {1, 2, 3, 4, 5, 6}
-    assert all(800 < n < 1200 for n in counts.values())
+    assert all(800 < count < 1200 for count in counts.values())
 
 
 def test_random_is_in_unit_interval() -> None:
     rng = Rng("seed")
     values = [rng.random("u") for _ in range(10000)]
-    assert all(0.0 <= v < 1.0 for v in values)
+    assert all(0.0 <= value < 1.0 for value in values)
     assert 0.48 < sum(values) / len(values) < 0.52
 
 
@@ -76,7 +76,7 @@ def test_shuffle_is_a_permutation_and_uniform() -> None:
         rng.shuffle("s", items)
         assert sorted(items) == [0, 1, 2, 3]
         firsts[items[0]] += 1
-    assert all(850 < n < 1150 for n in firsts.values())
+    assert all(850 < count < 1150 for count in firsts.values())
 
 
 def test_invalid_arguments() -> None:

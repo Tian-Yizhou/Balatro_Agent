@@ -18,15 +18,19 @@ __all__ = [
     "AnteChanged",
     "BlindSelected",
     "BossChosen",
+    "CardDestroyed",
     "CardMoved",
-    "CardScored",
+    "CardRetriggered",
     "CardToggled",
     "CardsDiscarded",
     "CardsDrawn",
+    "EffectApplied",
     "Event",
+    "HandLevelChanged",
     "HandPlayed",
     "HandScored",
     "HandSorted",
+    "JokerDestroyed",
     "JokerMoved",
     "MoneyChanged",
     "PhaseChanged",
@@ -109,12 +113,57 @@ class HandPlayed(Event):
 
 
 @dataclass(frozen=True, slots=True)
-class CardScored(Event):
-    """A scoring card added ``chips`` to the hand's chips."""
+class EffectApplied(Event):
+    """Something changed the score of the hand being played, or paid money.
 
-    kind: ClassVar[str] = "card_scored"
+    ``source`` is the uid of the card or joker the effect comes from, and ``key``
+    names what it is: a joker or enhancement key, an edition, ``"card"`` for a
+    playing card's own chips, or ``"seal"``. ``target`` is the playing card the
+    effect is about, if any. ``via`` is the uid of a Blueprint or Brainstorm
+    that copied the effect. Fields an effect doesn't use keep their neutral value.
+    """
+
+    kind: ClassVar[str] = "effect_applied"
+    source: int
+    key: str
+    target: int | None = None
+    chips: float = 0.0
+    mult: float = 0.0
+    x_mult: float = 1.0
+    dollars: int = 0
+    via: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CardRetriggered(Event):
+    """A playing card is evaluated again, because of ``source`` (a seal or joker)."""
+
+    kind: ClassVar[str] = "card_retriggered"
     uid: int
-    chips: float
+    source: int
+    key: str
+
+
+@dataclass(frozen=True, slots=True)
+class CardDestroyed(Event):
+    kind: ClassVar[str] = "card_destroyed"
+    uid: int
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class JokerDestroyed(Event):
+    kind: ClassVar[str] = "joker_destroyed"
+    uid: int
+    key: str
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class HandLevelChanged(Event):
+    kind: ClassVar[str] = "hand_level_changed"
+    hand: HandType
+    level: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -179,7 +228,11 @@ EVENT_TYPES: dict[str, type[Event]] = {
         JokerMoved,
         HandSorted,
         HandPlayed,
-        CardScored,
+        EffectApplied,
+        CardRetriggered,
+        CardDestroyed,
+        JokerDestroyed,
+        HandLevelChanged,
         HandScored,
         CardsDiscarded,
         RoundEnded,

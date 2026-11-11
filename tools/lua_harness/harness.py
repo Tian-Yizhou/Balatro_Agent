@@ -159,22 +159,26 @@ def random_hand_cases(seed: int, count: int) -> Iterator[tuple[list[CardSpec], s
     Yields ``(cards, flags)``, where ``flags`` holds ``f`` (Four Fingers), ``s``
     (Shortcut) and ``m`` (Smeared Joker).
     """
-    rnd = random.Random(seed)
+    randomizer = random.Random(seed)
     for _ in range(count):
-        size = rnd.choice((1, 2, 3, 4, 4, 5, 5, 5, 5, 5, 5, 6, 7))
-        style = rnd.random()
-        suits = "SH" if rnd.random() < 0.4 else "SHCD"
+        size = randomizer.choice((1, 2, 3, 4, 4, 5, 5, 5, 5, 5, 5, 6, 7))
+        style = randomizer.random()
+        suits = "SH" if randomizer.random() < 0.4 else "SHCD"
         cards = []
         for uid in range(1, size + 1):
             if style < 0.3:
-                rank = rnd.randint(2, 14)
+                rank = randomizer.randint(2, 14)
             elif style < 0.6:
-                rank = rnd.choice((2, 3, 4, 5, 6, 10, 11, 12, 13, 14))
+                rank = randomizer.choice((2, 3, 4, 5, 6, 10, 11, 12, 13, 14))
             else:
-                rank = rnd.choice((7, 7, 8, 8, 9))
-            enhancement = rnd.choices((None, "m_wild", "m_stone"), (0.85, 0.1, 0.05))[0]
-            cards.append(CardSpec(uid, rank, rnd.choice(suits), enhancement, rnd.random() < 0.07))
-        flags = "".join(flag for flag in "fsm" if rnd.random() < 0.25)
+                rank = randomizer.choice((7, 7, 8, 8, 9))
+            enhancement = randomizer.choices((None, "m_wild", "m_stone"), (0.85, 0.1, 0.05))[0]
+            cards.append(
+                CardSpec(
+                    uid, rank, randomizer.choice(suits), enhancement, randomizer.random() < 0.07
+                )
+            )
+        flags = "".join(flag for flag in "fsm" if randomizer.random() < 0.25)
         yield cards, flags
 
 
@@ -227,9 +231,10 @@ class LuaGame:
             "top": None if text == "NULL" else text,
             "display": "" if display == "NULL" else display,
             "scoring": _to_list(scoring),
+            # Lua's table order changes between runs; sort for stable vectors.
             "groups": {
                 name: [_to_list(group) for group in _values(value)]
-                for name, value in groups.items()
+                for name, value in sorted(groups.items())
                 if len(value) > 0
             },
         }

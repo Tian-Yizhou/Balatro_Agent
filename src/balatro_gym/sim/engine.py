@@ -35,29 +35,30 @@ from .actions import (
     SortBySuit,
     ToggleCard,
 )
-from .blinds import BLINDS, choose_boss, get_blind_amount, lua_floor
-from .cards import STONE, chip_bonus, sort_key
+from .blinds import BLINDS, choose_boss, get_blind_amount
+from .cards import sort_key
+from .effects import Area, Context, ContextKind, Effect, calculate_joker
 from .events import (
     AnteChanged,
     BlindSelected,
     BossChosen,
+    CardDestroyed,
     CardMoved,
-    CardScored,
     CardsDiscarded,
     CardsDrawn,
     CardToggled,
     Event,
-    HandPlayed,
-    HandScored,
     HandSorted,
     JokerMoved,
-    MoneyChanged,
-    PhaseChanged,
     RoundEnded,
     RunEnded,
 )
-from .hands import evaluate_poker_hand, initial_hand_levels
+from .hands import initial_hand_levels
+from .jokers import DOLLAR_BONUS
+from .modifiers import end_of_round_dollars, red_seal_repetitions
 from .rng import Rng
+from .scope import Scope
+from .scoring import evaluate_play
 from .serialize import clone
 from .state import (
     BlindSlot,
@@ -173,10 +174,14 @@ def new_run(seed: str | int, config: RunConfig | None = None) -> RunState:
         bosses_used={key: 0 for key, info in BLINDS.items() if info.boss},
         interest_cap=25,
         interest_amount=1,
+        inflation=0,
+        discount_percent=0,
         scaling=scaling,
         ante_scaling=1.0,
         no_blind_reward=no_blind_reward,
         payouts=[],
+        probabilities_normal=1.0,
+        pool_flags={},
         hand_sort=HandSort.RANK,
         deck=[],
         hand=[],
@@ -212,7 +217,12 @@ def legal_actions(state: RunState) -> list[Action]:
             if card.selected or selected < SELECTION_LIMIT:
                 actions.append(ToggleCard(i))
         size = len(state.hand)
-        actions.extend(MoveCard(i, j) for i in range(size) for j in range(size) if i != j)
+        actions.extend(
+            MoveCard(source, target)
+            for source in range(size)
+            for target in range(size)
+            if source != target
+        )
         if state.hand:
             actions.extend((SortByRank(), SortBySuit()))
     elif phase is Phase.ROUND_EVAL:
@@ -223,7 +233,12 @@ def legal_actions(state: RunState) -> list[Action]:
         actions.extend((ContinueEndless(), EndRun()))
     if phase in _JOKER_MOVE_PHASES:
         size = len(state.jokers)
-        actions.extend(MoveJoker(i, j) for i in range(size) for j in range(size) if i != j)
+        actions.extend(
+            MoveJoker(source, target)
+            for source in range(size)
+            for target in range(size)
+            if source != target
+        )
     return actions
 
 
@@ -260,21 +275,23 @@ def _check_discard(state: RunState, _: Discard) -> bool:
 
 
 _CHECKS: dict[type[Action], Callable[[RunState, Any], bool]] = {
-    SelectBlind: lambda s, _: s.phase is Phase.BLIND_SELECT,
+    SelectBlind: lambda state, _: state.phase is Phase.BLIND_SELECT,
     ToggleCard: _check_toggle,
-    MoveCard: lambda s, a: (
-        s.phase is Phase.SELECTING_HAND and _is_move_legal(len(s.hand), a.source, a.target)
+    MoveCard: lambda state, action: (
+        state.phase is Phase.SELECTING_HAND
+        and _is_move_legal(len(state.hand), action.source, action.target)
     ),
-    SortByRank: lambda s, _: s.phase is Phase.SELECTING_HAND and bool(s.hand),
-    SortBySuit: lambda s, _: s.phase is Phase.SELECTING_HAND and bool(s.hand),
+    SortByRank: lambda state, _: state.phase is Phase.SELECTING_HAND and bool(state.hand),
+    SortBySuit: lambda state, _: state.phase is Phase.SELECTING_HAND and bool(state.hand),
     Play: _check_play,
     Discard: _check_discard,
-    CashOut: lambda s, _: s.phase is Phase.ROUND_EVAL,
-    EndShop: lambda s, _: s.phase is Phase.SHOP,
-    ContinueEndless: lambda s, _: s.phase is Phase.WIN,
-    EndRun: lambda s, _: s.phase is Phase.WIN,
-    MoveJoker: lambda s, a: (
-        s.phase in _JOKER_MOVE_PHASES and _is_move_legal(len(s.jokers), a.source, a.target)
+    CashOut: lambda state, _: state.phase is Phase.ROUND_EVAL,
+    EndShop: lambda state, _: state.phase is Phase.SHOP,
+    ContinueEndless: lambda state, _: state.phase is Phase.WIN,
+    EndRun: lambda state, _: state.phase is Phase.WIN,
+    MoveJoker: lambda state, action: (
+        state.phase in _JOKER_MOVE_PHASES
+        and _is_move_legal(len(state.jokers), action.source, action.target)
     ),
 }
 
@@ -290,9 +307,10 @@ def step(state: RunState, action: Action) -> list[Event]:
     """
     if not is_legal(state, action):
         raise IllegalActionError(f"{action} is not legal in phase {state.phase.value}")
-    ctx = _Step(state)
-    _HANDLERS[type(action)](ctx, action)
-    return ctx.events
+    scope = Scope(state)
+    _HANDLERS[type(action)](scope, action)
+    scope.flush()
+    return scope.events
 
 
 def determinize(state: RunState, seed: str | int) -> RunState:
@@ -308,62 +326,38 @@ def determinize(state: RunState, seed: str | int) -> RunState:
     return copy
 
 
-class _Step:
-    """The state being changed by one action, and the events emitted so far."""
-
-    __slots__ = ("events", "state")
-
-    def __init__(self, state: RunState) -> None:
-        self.state = state
-        self.events: list[Event] = []
-
-    def emit(self, event: Event) -> None:
-        self.events.append(event)
-
-    def set_phase(self, phase: Phase) -> None:
-        old = self.state.phase
-        if phase is not old:
-            self.state.phase = phase
-            self.emit(PhaseChanged(old, phase))
-
-    def change_money(self, delta: int, reason: str) -> None:
-        """Source: functions/common_events.lua ``ease_dollars``."""
-        self.state.money += delta
-        self.emit(MoneyChanged(delta, self.state.money, reason))
-
-
-def _toggle_card(ctx: _Step, action: ToggleCard) -> None:
-    card = ctx.state.hand[action.index]
+def _toggle_card(scope: Scope, action: ToggleCard) -> None:
+    card = scope.state.hand[action.index]
     card.selected = not card.selected
-    ctx.emit(CardToggled(card.uid, card.selected))
+    scope.emit(CardToggled(card.uid, card.selected))
 
 
-def _move_card(ctx: _Step, action: MoveCard) -> None:
-    hand = ctx.state.hand
+def _move_card(scope: Scope, action: MoveCard) -> None:
+    hand = scope.state.hand
     card = hand.pop(action.source)
     hand.insert(action.target, card)
-    ctx.emit(CardMoved(card.uid, action.source, action.target))
+    scope.emit(CardMoved(card.uid, action.source, action.target))
 
 
-def _move_joker(ctx: _Step, action: MoveJoker) -> None:
-    jokers = ctx.state.jokers
+def _move_joker(scope: Scope, action: MoveJoker) -> None:
+    jokers = scope.state.jokers
     joker: Item = jokers.pop(action.source)
     jokers.insert(action.target, joker)
-    ctx.emit(JokerMoved(joker.uid, action.source, action.target))
+    scope.emit(JokerMoved(joker.uid, action.source, action.target))
 
 
-def _sort_by_rank(ctx: _Step, _: SortByRank) -> None:
+def _sort_by_rank(scope: Scope, _: SortByRank) -> None:
     """Source: functions/button_callbacks.lua ``G.FUNCS.sort_hand_value``."""
-    ctx.state.hand_sort = HandSort.RANK
-    _sort_hand(ctx.state)
-    ctx.emit(HandSorted(HandSort.RANK))
+    scope.state.hand_sort = HandSort.RANK
+    _sort_hand(scope.state)
+    scope.emit(HandSorted(HandSort.RANK))
 
 
-def _sort_by_suit(ctx: _Step, _: SortBySuit) -> None:
+def _sort_by_suit(scope: Scope, _: SortBySuit) -> None:
     """Source: functions/button_callbacks.lua ``G.FUNCS.sort_hand_suit``."""
-    ctx.state.hand_sort = HandSort.SUIT
-    _sort_hand(ctx.state)
-    ctx.emit(HandSorted(HandSort.SUIT))
+    scope.state.hand_sort = HandSort.SUIT
+    _sort_hand(scope.state)
+    scope.emit(HandSorted(HandSort.SUIT))
 
 
 def _sort_hand(state: RunState) -> None:
@@ -385,19 +379,19 @@ def _shuffle(state: RunState, key: str) -> None:
     state.rng.shuffle(key, state.deck)
 
 
-def _select_blind(ctx: _Step, _: SelectBlind) -> None:
+def _select_blind(scope: Scope, _: SelectBlind) -> None:
     """Source: functions/button_callbacks.lua ``G.FUNCS.select_blind``."""
-    state = ctx.state
+    state = scope.state
     slot = state.blind_on_deck
     assert slot is not None
     state.round += 1
     state.blind_states[slot] = BlindStatus.CURRENT
-    _new_round(ctx, slot)
+    _new_round(scope, slot)
 
 
-def _new_round(ctx: _Step, slot: BlindSlot) -> None:
+def _new_round(scope: Scope, slot: BlindSlot) -> None:
     """Source: functions/state_events.lua ``new_round``."""
-    state = ctx.state
+    state = scope.state
     state.discards_left = max(0, state.discards_per_round)
     state.hands_left = max(1, state.hands_per_round)
     state.hands_played_this_round = 0
@@ -405,9 +399,12 @@ def _new_round(ctx: _Step, slot: BlindSlot) -> None:
     for level in state.hands.values():
         level.played_this_round = 0
     blind = _set_blind(state, state.blind_choices[slot], slot)
-    ctx.emit(BlindSelected(slot, blind.key, blind.chips))
+    scope.emit(BlindSelected(slot, blind.key, blind.chips))
+    for joker in list(state.jokers):
+        calculate_joker(scope, joker, Context(ContextKind.SETTING_BLIND))
+    scope.flush()
     _shuffle(state, f"nr{state.ante}")
-    _draw_to_hand(ctx)
+    _draw_to_hand(scope)
 
 
 def _set_blind(state: RunState, key: str, slot: BlindSlot) -> BlindState:
@@ -419,46 +416,50 @@ def _set_blind(state: RunState, key: str, slot: BlindSlot) -> BlindState:
     return state.blind
 
 
-def _draw_to_hand(ctx: _Step) -> None:
+def _draw_to_hand(scope: Scope) -> None:
     """Draw up to the hand size, then wait for the player.
 
     Source: functions/state_events.lua ``G.FUNCS.draw_from_deck_to_hand``;
     game.lua ``Game:update_draw_to_hand`` and ``Game:update_selecting_hand``.
     """
-    state = ctx.state
+    state = scope.state
     if state.hand_size <= 0 and not state.hand:
-        _game_over(ctx)
+        _game_over(scope)
         return
     count = min(len(state.deck), state.hand_size - len(state.hand))
     drawn = [state.deck.pop() for _ in range(max(0, count))]
     if drawn:
         state.hand.extend(drawn)
         _sort_hand(state)
-        ctx.emit(CardsDrawn(tuple(card.uid for card in drawn)))
-    ctx.set_phase(Phase.SELECTING_HAND)
+        scope.emit(CardsDrawn(tuple(card.uid for card in drawn)))
+    if state.hands_played_this_round == 0 and state.discards_used_this_round == 0:
+        for joker in list(state.jokers):
+            calculate_joker(scope, joker, Context(ContextKind.FIRST_HAND_DRAWN))
+        scope.flush()
+    scope.set_phase(Phase.SELECTING_HAND)
     if not state.hand and not state.deck:
-        _end_round(ctx)
+        _end_round(scope)
 
 
-def _play(ctx: _Step, _: Play) -> None:
+def _play(scope: Scope, _: Play) -> None:
     """Source: functions/state_events.lua ``G.FUNCS.play_cards_from_highlighted``;
     game.lua ``Game:update_hand_played``.
     """
-    state = ctx.state
+    state = scope.state
     played = _take_selected(state)
     state.hands_left -= 1
     for card in played:
         card.times_played += 1
         card.played_this_ante = True
-    _evaluate_play(ctx, played)
-    state.discard.extend(played)
+    destroyed = evaluate_play(scope, played)
+    state.discard.extend(card for card in played if card not in destroyed)
     state.hands_played += 1
     state.hands_played_this_round += 1
     assert state.blind is not None
     if state.chips >= state.blind.chips or state.hands_left < 1:
-        _end_round(ctx)
+        _end_round(scope)
     else:
-        _draw_to_hand(ctx)
+        _draw_to_hand(scope)
 
 
 def _take_selected(state: RunState) -> list[PlayingCard]:
@@ -470,72 +471,65 @@ def _take_selected(state: RunState) -> list[PlayingCard]:
     return taken
 
 
-def _evaluate_play(ctx: _Step, played: list[PlayingCard]) -> None:
-    """Score a played hand.
-
-    Source: functions/state_events.lua ``G.FUNCS.evaluate_play``.
-    """
-    state = ctx.state
-    hands = evaluate_poker_hand(played)
-    hand = hands.top
-    assert hand is not None
-    level = state.hands[hand]
-    level.played += 1
-    level.played_this_round += 1
-    level.visible = True
-    state.last_hand_played = hand
-
-    # Stone cards always score; then the scoring cards go in play order.
-    scoring_positions = set(hands.scoring)
-    scoring_positions.update(i for i, card in enumerate(played) if card.enhancement == STONE)
-    scoring = [played[i] for i in sorted(scoring_positions)]
-    ctx.emit(
-        HandPlayed(
-            uids=tuple(card.uid for card in played),
-            hand=hand,
-            scoring=tuple(card.uid for card in scoring),
-        )
-    )
-
-    chips = float(level.chips)
-    mult = float(level.mult)
-    for card in scoring:
-        if card.debuffed:
-            continue
-        bonus = chip_bonus(card)
-        if bonus > 0:
-            chips += bonus
-            ctx.emit(CardScored(card.uid, float(bonus)))
-    score = lua_floor(chips * mult)
-    state.chips += score
-    ctx.emit(HandScored(hand=hand, chips=chips, mult=mult, score=score, total=state.chips))
-
-
-def _discard(ctx: _Step, _: Discard) -> None:
+def _discard(scope: Scope, _: Discard) -> None:
     """Source: functions/state_events.lua ``G.FUNCS.discard_cards_from_highlighted``."""
-    state = ctx.state
+    state = scope.state
     cards = _take_selected(state)
+    for joker in list(state.jokers):
+        calculate_joker(scope, joker, Context(ContextKind.PRE_DISCARD, full_hand=cards))
+    destroyed: list[PlayingCard] = []
     for card in cards:
-        card.discarded = True
-    state.discard.extend(cards)
-    ctx.emit(CardsDiscarded(tuple(card.uid for card in cards)))
+        removed = False
+        for joker in list(state.jokers):
+            effect = calculate_joker(
+                scope, joker, Context(ContextKind.DISCARD, full_hand=cards, other_card=card)
+            )
+            if effect is not None and effect.remove:
+                removed = True
+        if removed:
+            destroyed.append(card)
+        else:
+            card.discarded = True
+            state.discard.append(card)
+    scope.emit(CardsDiscarded(tuple(card.uid for card in cards)))
+    for card in destroyed:
+        scope.emit(CardDestroyed(card.uid, "discarded"))
+    if destroyed:
+        for joker in list(state.jokers):
+            calculate_joker(
+                scope,
+                joker,
+                Context(ContextKind.REMOVE_PLAYING_CARDS, Area.JOKERS, removed=destroyed),
+            )
+    scope.flush()
     state.discards_left -= 1
     state.discards_used_this_round += 1
-    _draw_to_hand(ctx)
+    _draw_to_hand(scope)
 
 
-def _end_round(ctx: _Step) -> None:
+def _end_round(scope: Scope) -> None:
     """Source: functions/state_events.lua ``end_round``."""
-    state = ctx.state
+    state = scope.state
     blind = state.blind
     assert blind is not None
     beaten = state.chips >= blind.chips
-    ctx.emit(RoundEnded(blind=blind.key, won=beaten, score=state.chips, target=blind.chips))
-    if not beaten:
-        _game_over(ctx)
+    game_over = not beaten
+    for joker in list(state.jokers):
+        effect = calculate_joker(
+            scope, joker, Context(ContextKind.END_OF_ROUND, end_of_round=True, game_over=game_over)
+        )
+        if effect is not None and effect.saved:
+            game_over = False
+    scope.flush()
+    scope.emit(RoundEnded(blind=blind.key, won=beaten, score=state.chips, target=blind.chips))
+    if game_over:
+        _game_over(scope)
         return
     game_won = state.ante == state.win_ante and blind.slot is BlindSlot.BOSS
     state.unused_discards += state.discards_left
+    for card in list(state.hand):
+        _end_of_round_held_card(scope, card)
+    scope.flush()
 
     for card in state.hand:
         card.selected = False
@@ -543,7 +537,7 @@ def _end_round(ctx: _Step) -> None:
     state.hand.clear()
     if blind.slot is BlindSlot.BOSS:
         state.ante += 1
-        ctx.emit(AnteChanged(state.ante))
+        scope.emit(AnteChanged(state.ante))
     # Source: functions/state_events.lua G.FUNCS.draw_from_discard_to_deck.
     state.deck[:0] = state.discard
     state.discard.clear()
@@ -553,50 +547,87 @@ def _end_round(ctx: _Step) -> None:
         card.discarded = False
         if blind.slot is BlindSlot.BOSS:
             card.played_this_ante = False
-    state.payouts = _evaluate_round(state)
+    state.payouts = _evaluate_round(scope, beaten)
 
     if game_won and not state.won:
         state.won = True
-        ctx.set_phase(Phase.WIN)
+        scope.set_phase(Phase.WIN)
     else:
-        ctx.set_phase(Phase.ROUND_EVAL)
+        scope.set_phase(Phase.ROUND_EVAL)
 
 
-def _evaluate_round(state: RunState) -> list[Payout]:
+def _end_of_round_held_card(scope: Scope, card: PlayingCard) -> None:
+    """Effects of a card held in hand when the round ends, with retriggers."""
+    state = scope.state
+    passes = 1
+    index = 0
+    while index < passes:
+        dollars, acted = end_of_round_dollars(scope, card)
+        if index == 0:
+            effects: list[Effect | None] = [None if not acted else Effect(dollars=dollars)]
+            if red_seal_repetitions(card) and acted:
+                passes += 1
+            for joker in list(state.jokers):
+                effect = calculate_joker(
+                    scope,
+                    joker,
+                    Context(
+                        ContextKind.REPETITION,
+                        Area.HAND,
+                        other_card=card,
+                        end_of_round=True,
+                        card_effects=effects,
+                    ),
+                )
+                if effect is not None and effect.repetitions:
+                    passes += effect.repetitions
+        if dollars:
+            scope.change_money(dollars, "held_card")
+        index += 1
+
+
+def _evaluate_round(scope: Scope, beaten: bool) -> list[Payout]:
     """The money earned for the round, row by row.
 
-    Source: functions/state_events.lua ``G.FUNCS.evaluate_round``.
+    Source: functions/state_events.lua ``G.FUNCS.evaluate_round``; card.lua
+    ``Card:calculate_dollar_bonus``.
     """
+    state = scope.state
     assert state.blind is not None
-    payouts = [Payout("blind", state.blind.dollars)]
+    payouts = [Payout("blind", state.blind.dollars if beaten else 0)]
     if state.hands_left > 0:
         payouts.append(Payout("hands", state.hands_left))
+    for joker in state.jokers:
+        bonus = DOLLAR_BONUS.get(joker.key)
+        dollars = bonus(scope, joker) if bonus is not None and not joker.debuffed else None
+        if dollars:
+            payouts.append(Payout(joker.key, dollars))
     if state.money >= 5:
         interest = state.interest_amount * min(state.money // 5, state.interest_cap // 5)
         payouts.append(Payout("interest", interest))
     return payouts
 
 
-def _cash_out(ctx: _Step, _: CashOut) -> None:
+def _cash_out(scope: Scope, _: CashOut) -> None:
     """Source: functions/button_callbacks.lua ``G.FUNCS.cash_out``."""
-    state = ctx.state
+    state = scope.state
     _shuffle(state, f"cashout{state.ante}")
-    ctx.change_money(sum(payout.dollars for payout in state.payouts), "cash_out")
+    scope.change_money(sum(payout.dollars for payout in state.payouts), "cash_out")
     state.payouts = []
     state.discards_left = max(0, state.discards_per_round)
     state.hands_left = max(1, state.hands_per_round)
     state.chips = 0.0
     state.blind = None
-    _reset_blinds(ctx)
-    ctx.set_phase(Phase.SHOP)
+    _reset_blinds(scope)
+    scope.set_phase(Phase.SHOP)
 
 
-def _reset_blinds(ctx: _Step) -> None:
+def _reset_blinds(scope: Scope) -> None:
     """After the boss is beaten, start the next ante's blinds and pick its boss.
 
     Source: functions/common_events.lua ``reset_blinds``.
     """
-    state = ctx.state
+    state = scope.state
     if state.blind_states[BlindSlot.BOSS] is not BlindStatus.DEFEATED:
         return
     for slot in BlindSlot:
@@ -604,14 +635,14 @@ def _reset_blinds(ctx: _Step) -> None:
     state.blind_on_deck = BlindSlot.SMALL
     boss = choose_boss(state.rng, state.ante, state.win_ante, state.bosses_used)
     state.blind_choices[BlindSlot.BOSS] = boss
-    ctx.emit(BossChosen(state.ante, boss))
+    scope.emit(BossChosen(state.ante, boss))
 
 
-def _end_shop(ctx: _Step, _: EndShop) -> None:
+def _end_shop(scope: Scope, _: EndShop) -> None:
     """Source: functions/button_callbacks.lua ``G.FUNCS.toggle_shop``;
     functions/UI_definitions.lua ``create_UIBox_blind_select``.
     """
-    state = ctx.state
+    state = scope.state
     done = (BlindStatus.DEFEATED, BlindStatus.SKIPPED)
     if state.blind_states[BlindSlot.SMALL] not in done:
         slot = BlindSlot.SMALL
@@ -621,26 +652,26 @@ def _end_shop(ctx: _Step, _: EndShop) -> None:
         slot = BlindSlot.BOSS
     state.blind_on_deck = slot
     state.blind_states[slot] = BlindStatus.SELECT
-    ctx.set_phase(Phase.BLIND_SELECT)
+    scope.set_phase(Phase.BLIND_SELECT)
 
 
-def _continue_endless(ctx: _Step, _: ContinueEndless) -> None:
-    ctx.set_phase(Phase.ROUND_EVAL)
+def _continue_endless(scope: Scope, _: ContinueEndless) -> None:
+    scope.set_phase(Phase.ROUND_EVAL)
 
 
-def _end_run(ctx: _Step, _: EndRun) -> None:
-    ctx.set_phase(Phase.GAME_OVER)
-    state = ctx.state
-    ctx.emit(RunEnded(won=True, ante=state.ante, round=state.round))
+def _end_run(scope: Scope, _: EndRun) -> None:
+    scope.set_phase(Phase.GAME_OVER)
+    state = scope.state
+    scope.emit(RunEnded(won=True, ante=state.ante, round=state.round))
 
 
-def _game_over(ctx: _Step) -> None:
-    ctx.set_phase(Phase.GAME_OVER)
-    state = ctx.state
-    ctx.emit(RunEnded(won=False, ante=state.ante, round=state.round))
+def _game_over(scope: Scope) -> None:
+    scope.set_phase(Phase.GAME_OVER)
+    state = scope.state
+    scope.emit(RunEnded(won=False, ante=state.ante, round=state.round))
 
 
-_HANDLERS: dict[type[Action], Callable[[_Step, Any], None]] = {
+_HANDLERS: dict[type[Action], Callable[[Scope, Any], None]] = {
     SelectBlind: _select_blind,
     ToggleCard: _toggle_card,
     MoveCard: _move_card,

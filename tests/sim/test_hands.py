@@ -66,6 +66,6 @@ def test_matches_original_game_vectors() -> None:
         (case["cards"], case["flags"])
         for case in cases
         if describe(case["cards"], case["flags"])
-        != {k: case[k] for k in ("top", "display", "scoring", "groups")}
+        != {key: case[key] for key in ("top", "display", "scoring", "groups")}
     ]
     assert mismatches == []
