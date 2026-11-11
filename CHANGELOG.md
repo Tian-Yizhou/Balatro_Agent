@@ -16,6 +16,10 @@ Notable changes to this project. The format follows
   win at ante 8 with the choice to continue in endless mode.
 - Poker hand evaluation and blind score targets ported from the game and checked
   against its Lua code, with a harness in `tools/lua_harness/`.
+- Replays in `balatro_gym.replay`: a recorder with round keyframes and per-step
+  annotations, `.json` and `.json.gz` files, restoring any step, branching, a drift
+  check, a text viewer (`python -m balatro_gym.replay`), and golden replays in
+  `tests/golden/`.
 
 ### Changed
 
