@@ -8,14 +8,14 @@ from collections.abc import Callable, Sequence
 from typing import Any
 
 from balatro_gym.sim import Game, macros
-from balatro_gym.sim import actions as act
-from balatro_gym.sim import events as ev
-from balatro_gym.sim.cards import chip_bonus
+from balatro_gym.sim.actions import Action, ContinueEndless, SelectBlind
+from balatro_gym.sim.events import Event, HandScored
 from balatro_gym.sim.hands import display_name, evaluate_poker_hand
 from balatro_gym.sim.items import new_item
+from balatro_gym.sim.modifiers import scoring_chips
 from balatro_gym.sim.state import Phase, PlayingCard, RunState, Suit
 
-Policy = Callable[[Game, random.Random], list[act.Action]]
+Policy = Callable[[Game, random.Random], list[Action]]
 
 _RANKS = "23456789TJQKA"
 _ENHANCEMENTS = {"w": "m_wild", "s": "m_stone"}
@@ -50,7 +50,9 @@ def describe(text: str, flags: str = "") -> dict[str, Any]:
         "display": display_name(played, hands),
         "scoring": list(hands.scoring),
         "groups": {
-            hand.value: [list(g) for g in groups] for hand, groups in hands.groups.items() if groups
+            hand.value: [list(group) for group in groups]
+            for hand, groups in hands.groups.items()
+            if groups
         },
     }
 
@@ -58,12 +60,12 @@ def describe(text: str, flags: str = "") -> dict[str, Any]:
 def started_round(seed: str | int = "test") -> Game:
     """A new game with the small blind selected and the first hand drawn."""
     game = Game.new(seed)
-    game.step(act.SelectBlind())
+    game.step(SelectBlind())
     return game
 
 
 def set_hand(state: RunState, labels: str) -> list[PlayingCard]:
-    """Put the cards named in ``labels`` (e.g. ``"AS KH 2C"``) in hand, in that order.
+    """Put the cards named in ``labels`` (event.g. ``"AS KH 2C"``) in hand, in that order.
 
     Cards are taken from the draw or discard pile, and the previous hand
     goes back to the draw pile, so every card is still accounted for.
@@ -71,9 +73,13 @@ def set_hand(state: RunState, labels: str) -> list[PlayingCard]:
     state.deck.extend(state.hand)
     state.hand.clear()
     for label in labels.split():
-        area = next(a for a in (state.deck, state.discard) if any(c.label == label for c in a))
-        card = next(card for card in area if card.label == label)
-        area.remove(card)
+        pile = next(
+            candidate
+            for candidate in (state.deck, state.discard)
+            if any(card.label == label for card in candidate)
+        )
+        card = next(card for card in pile if card.label == label)
+        pile.remove(card)
         card.selected = False
         state.hand.append(card)
     return state.hand
@@ -88,38 +94,36 @@ def best_hand(state: RunState) -> tuple[int, ...]:
             hands = evaluate_poker_hand(cards)
             assert hands.top is not None
             level = state.hands[hands.top]
-            chips = level.chips + sum(chip_bonus(cards[i]) for i in hands.scoring)
+            chips = level.chips + sum(scoring_chips(cards[i]) for i in hands.scoring)
             best = max(best, (chips * level.mult, combo))
     return best[1]
 
 
-def greedy_policy(game: Game, rnd: random.Random) -> list[act.Action]:
+def greedy_policy(game: Game, randomizer: random.Random) -> list[Action]:
     """Play the best plain-card hand; take the first legal action elsewhere."""
     state = game.state
     if state.phase is Phase.SELECTING_HAND:
         return macros.play_cards(state, best_hand(state))
     if state.phase is Phase.WIN:
-        return [act.ContinueEndless()]
+        return [ContinueEndless()]
     return [game.legal_actions()[0]]
 
 
-def random_policy(game: Game, rnd: random.Random) -> list[act.Action]:
+def random_policy(game: Game, randomizer: random.Random) -> list[Action]:
     """A uniformly random legal action, with a bias towards ending the round."""
     actions = game.legal_actions()
-    if rnd.random() < 0.3:
+    if randomizer.random() < 0.3:
         return [actions[0]]
-    return [rnd.choice(actions)]
+    return [randomizer.choice(actions)]
 
 
-def play_game(
-    seed: str | int, policy: Policy, max_steps: int = 5000
-) -> tuple[Game, list[act.Action]]:
+def play_game(seed: str | int, policy: Policy, max_steps: int = 5000) -> tuple[Game, list[Action]]:
     """Play a game to the end and return it with the atomic actions taken."""
     game = Game.new(seed)
-    rnd = random.Random(str(seed))
-    taken: list[act.Action] = []
+    randomizer = random.Random(str(seed))
+    taken: list[Action] = []
     while not game.is_over and len(taken) < max_steps:
-        for action in policy(game, rnd):
+        for action in policy(game, randomizer):
             game.step(action)
             taken.append(action)
     return game, taken
@@ -132,7 +136,7 @@ def play_hand(
     jokers: Sequence[str] = (),
     setup: Callable[[RunState, list[PlayingCard]], None] | None = None,
     seed: str = "score",
-) -> tuple[Game, list[ev.Event], ev.HandScored]:
+) -> tuple[Game, list[Event], HandScored]:
     """Play the cards in ``played`` with ``held`` kept in hand and ``jokers`` owned.
 
     ``setup`` can change the state and the cards (played first, then held)
@@ -146,8 +150,8 @@ def play_hand(
         state.jokers.append(new_item(state, key))
     if setup is not None:
         setup(state, cards)
-    events: list[ev.Event] = []
+    events: list[Event] = []
     for action in macros.play_cards(state, range(len(played.split()))):
         events += game.step(action)
-    scored = next(e for e in events if isinstance(e, ev.HandScored))
+    scored = next(event for event in events if isinstance(event, HandScored))
     return game, events, scored

@@ -3,10 +3,22 @@ from __future__ import annotations
 import pytest
 
 from balatro_gym.sim import Game, IllegalActionError, macros, snapshot
-from balatro_gym.sim import actions as act
-from balatro_gym.sim import events as ev
+from balatro_gym.sim.actions import (
+    CashOut,
+    ContinueEndless,
+    Discard,
+    EndRun,
+    EndShop,
+    MoveCard,
+    MoveJoker,
+    Play,
+    SelectBlind,
+    SortBySuit,
+    ToggleCard,
+)
 from balatro_gym.sim.blinds import BLINDS
 from balatro_gym.sim.engine import legal_actions, new_run
+from balatro_gym.sim.events import Event, HandScored, RunEnded
 from balatro_gym.sim.state import (
     BlindSlot,
     BlindStatus,
@@ -19,14 +31,14 @@ from balatro_gym.sim.state import (
 from scenarios import set_hand, started_round
 
 
-def kinds(events: list[ev.Event]) -> list[str]:
+def kinds(events: list[Event]) -> list[str]:
     return [event.kind for event in events]
 
 
-def play(game: Game, labels: str) -> list[ev.Event]:
+def play(game: Game, labels: str) -> list[Event]:
     """Put ``labels`` in hand and play all of them."""
     set_hand(game.state, labels)
-    events: list[ev.Event] = []
+    events: list[Event] = []
     for action in macros.play_cards(game.state, range(len(game.state.hand))):
         events += game.step(action)
     return events
@@ -37,8 +49,8 @@ def beat_blind(game: Game) -> None:
     game.state.hands[HandType.HIGH_CARD].mult = 10**9
     play(game, "AS")
     if game.state.phase is Phase.WIN:
-        game.step(act.ContinueEndless())
-    game.step(act.CashOut())
+        game.step(ContinueEndless())
+    game.step(CashOut())
 
 
 class TestNewRun:
@@ -67,7 +79,7 @@ class TestNewRun:
         game = Game.new("seed", RunConfig(stake=stake))
         assert game.state.discards_per_round == discards
         assert game.state.scaling == scaling
-        game.step(act.SelectBlind())
+        game.step(SelectBlind())
         assert game.state.blind is not None
         assert game.state.blind.dollars == small_reward
 
@@ -81,7 +93,7 @@ class TestNewRun:
 class TestRound:
     def test_select_blind_draws_a_sorted_hand(self) -> None:
         game = Game.new("seed")
-        events = game.step(act.SelectBlind())
+        events = game.step(SelectBlind())
         state = game.state
         assert state.phase is Phase.SELECTING_HAND
         assert state.round == 1
@@ -107,7 +119,7 @@ class TestRound:
     def test_scoring(self, labels: str, hand: HandType, score: int) -> None:
         game = started_round()
         events = play(game, labels)
-        scored = next(e for e in events if isinstance(e, ev.HandScored))
+        scored = next(event for event in events if isinstance(event, HandScored))
         assert (scored.hand, scored.score) == (hand, score)
         assert game.state.chips == score
         assert game.state.hands[hand].played == 1
@@ -117,18 +129,20 @@ class TestRound:
         game = started_round()
         cards = set_hand(game.state, "AS AH")
         cards[0].debuffed = True
-        game.step(act.ToggleCard(0))
-        game.step(act.ToggleCard(1))
-        events = game.step(act.Play())
-        assert next(e for e in events if isinstance(e, ev.HandScored)).score == (10 + 11) * 2
+        game.step(ToggleCard(0))
+        game.step(ToggleCard(1))
+        events = game.step(Play())
+        assert (
+            next(event for event in events if isinstance(event, HandScored)).score == (10 + 11) * 2
+        )
 
     def test_play_moves_cards_to_discard_and_draws(self) -> None:
         game = started_round()
         state = game.state
         played = set_hand(state, "AS AH 2C 3D 4H 5S 9C TD")[:2]
-        game.step(act.ToggleCard(0))
-        game.step(act.ToggleCard(1))
-        game.step(act.Play())
+        game.step(ToggleCard(0))
+        game.step(ToggleCard(1))
+        game.step(Play())
         assert state.hands_left == 3
         assert [card.uid for card in state.discard] == [card.uid for card in played]
         assert all(card.times_played == 1 for card in played)
@@ -150,60 +164,60 @@ class TestRound:
         game = started_round()
         state = game.state
         set_hand(state, "2C AS KH QD JC TS 9H 8D")
-        game.step(act.SortBySuit())
+        game.step(SortBySuit())
         assert state.hand_sort is HandSort.SUIT
-        assert [c.suit.value for c in state.hand] == sorted(
-            (c.suit.value for c in state.hand), key="SHCD".index
+        assert [card.suit.value for card in state.hand] == sorted(
+            (card.suit.value for card in state.hand), key="SHCD".index
         )
-        game.step(act.MoveCard(0, 7))
+        game.step(MoveCard(0, 7))
         for action in macros.discard_cards(state, [0]):
             game.step(action)
-        suits = [c.suit.value for c in state.hand]
+        suits = [card.suit.value for card in state.hand]
         assert suits == sorted(suits, key="SHCD".index)
 
     def test_selection_limit(self) -> None:
         game = started_round()
         for i in range(5):
-            game.step(act.ToggleCard(i))
-        assert not game.is_legal(act.ToggleCard(5))
-        assert game.is_legal(act.ToggleCard(4))
+            game.step(ToggleCard(i))
+        assert not game.is_legal(ToggleCard(5))
+        assert game.is_legal(ToggleCard(4))
         with pytest.raises(IllegalActionError):
-            game.step(act.ToggleCard(5))
+            game.step(ToggleCard(5))
 
     def test_play_and_discard_need_a_selection(self) -> None:
         game = started_round()
-        assert not game.is_legal(act.Play())
-        assert not game.is_legal(act.Discard())
+        assert not game.is_legal(Play())
+        assert not game.is_legal(Discard())
         game.state.discards_left = 0
-        game.step(act.ToggleCard(0))
-        assert game.is_legal(act.Play())
-        assert not game.is_legal(act.Discard())
+        game.step(ToggleCard(0))
+        assert game.is_legal(Play())
+        assert not game.is_legal(Discard())
 
     def test_move_card(self) -> None:
         game = started_round()
         set_hand(game.state, "AS KS QS JS")
-        game.step(act.MoveCard(0, 3))
-        assert [c.label for c in game.state.hand] == ["KS", "QS", "JS", "AS"]
-        assert not game.is_legal(act.MoveCard(1, 1))
-        assert not game.is_legal(act.MoveCard(0, 4))
+        game.step(MoveCard(0, 3))
+        assert [card.label for card in game.state.hand] == ["KS", "QS", "JS", "AS"]
+        assert not game.is_legal(MoveCard(1, 1))
+        assert not game.is_legal(MoveCard(0, 4))
 
     def test_illegal_action_leaves_state_unchanged(self) -> None:
         game = started_round()
         before = snapshot(game.state)
         with pytest.raises(IllegalActionError):
-            game.step(act.CashOut())
+            game.step(CashOut())
         assert snapshot(game.state) == before
 
     def test_losing_ends_the_run(self) -> None:
         game = started_round()
-        events: list[ev.Event] = []
+        events: list[Event] = []
         for _ in range(4):
             events += play(game, "2C")
         assert game.state.phase is Phase.GAME_OVER
         assert game.is_over
         assert legal_actions(game.state) == []
         ended = events[-1]
-        assert isinstance(ended, ev.RunEnded)
+        assert isinstance(ended, RunEnded)
         assert not ended.won
 
     def test_running_out_of_cards_ends_the_round(self) -> None:
@@ -218,7 +232,7 @@ class TestRound:
     def test_no_hand_size_ends_the_run(self) -> None:
         game = Game.new("seed")
         game.state.hand_size = 0
-        game.step(act.SelectBlind())
+        game.step(SelectBlind())
         assert game.state.phase is Phase.GAME_OVER
 
 
@@ -228,21 +242,24 @@ class TestProgression:
         state = game.state
         events = play(game, "TS JS QS KS AS")
         assert state.phase is Phase.ROUND_EVAL
-        assert [(p.source, p.dollars) for p in state.payouts] == [("blind", 3), ("hands", 3)]
+        assert [(payout.source, payout.dollars) for payout in state.payouts] == [
+            ("blind", 3),
+            ("hands", 3),
+        ]
         assert state.blind_states[BlindSlot.SMALL] is BlindStatus.DEFEATED
         assert len(state.deck) == 52
         assert not state.hand
         assert "round_ended" in kinds(events)
 
-        game.step(act.CashOut())
+        game.step(CashOut())
         assert state.money == 4 + 3 + 3
         assert state.phase is Phase.SHOP
         assert state.chips == 0
 
-        game.step(act.EndShop())
+        game.step(EndShop())
         assert state.phase is Phase.BLIND_SELECT
         assert state.blind_on_deck is BlindSlot.BIG
-        game.step(act.SelectBlind())
+        game.step(SelectBlind())
         assert state.blind is not None
         assert state.blind.chips == 450
 
@@ -259,8 +276,8 @@ class TestProgression:
         game = started_round()
         beat_blind(game)
         for _ in range(2):
-            game.step(act.EndShop())
-            game.step(act.SelectBlind())
+            game.step(EndShop())
+            game.step(SelectBlind())
             beat_blind(game)
         state = game.state
         assert state.ante == 2
@@ -278,20 +295,20 @@ class TestProgression:
         set_hand(state, "AS")
         state.blind = None
         state.phase = Phase.BLIND_SELECT
-        game.step(act.SelectBlind())
+        game.step(SelectBlind())
         play(game, "AS")
         assert state.phase is Phase.WIN
         assert state.won
-        assert legal_actions(state) == [act.ContinueEndless(), act.EndRun()]
+        assert legal_actions(state) == [ContinueEndless(), EndRun()]
 
         endless = game.clone()
-        endless.step(act.ContinueEndless())
+        endless.step(ContinueEndless())
         assert endless.state.phase is Phase.ROUND_EVAL
         assert endless.state.ante == 9
 
-        events = game.step(act.EndRun())
+        events = game.step(EndRun())
         assert game.is_over
-        assert isinstance(events[-1], ev.RunEnded)
+        assert isinstance(events[-1], RunEnded)
         assert events[-1].won
 
 
@@ -299,8 +316,8 @@ def test_move_joker() -> None:
     game = Game.new("seed")
     state = game.state
     state.jokers = [Item(uid=state.new_uid(), key=key) for key in ("j_a", "j_b", "j_c")]
-    assert act.MoveJoker(0, 2) in game.legal_actions()
-    game.step(act.MoveJoker(0, 2))
+    assert MoveJoker(0, 2) in game.legal_actions()
+    game.step(MoveJoker(0, 2))
     assert [joker.key for joker in state.jokers] == ["j_b", "j_c", "j_a"]
 
 
@@ -317,5 +334,5 @@ def test_same_seed_and_actions_give_the_same_game() -> None:
 
 
 def test_different_seeds_give_different_hands() -> None:
-    hands = {tuple(c.label for c in started_round(seed).state.hand) for seed in range(10)}
+    hands = {tuple(card.label for card in started_round(seed).state.hand) for seed in range(10)}
     assert len(hands) == 10

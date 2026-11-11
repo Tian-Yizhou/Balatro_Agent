@@ -30,9 +30,9 @@ __all__ = [
     "SUIT_NAMES",
     "Area",
     "Context",
-    "Ctx",
+    "ContextKind",
     "Effect",
-    "JokerFn",
+    "JokerEffect",
     "calculate_joker",
     "copy_joker",
     "destroy_joker",
@@ -40,12 +40,12 @@ __all__ = [
     "is_face",
     "is_implemented",
     "is_suit",
-    "joker",
+    "register_joker",
     "value",
 ]
 
 
-class Ctx(StrEnum):
+class ContextKind(StrEnum):
     """The situations a joker can react to, named as in the game."""
 
     SETTING_BLIND = "setting_blind"
@@ -81,7 +81,7 @@ class Context:
     first of them; jokers that must not be copied check ``blueprint``.
     """
 
-    kind: Ctx
+    kind: ContextKind
     area: Area | None = None
     full_hand: Sequence[PlayingCard] = ()
     scoring_hand: Sequence[PlayingCard] = ()
@@ -108,18 +108,19 @@ class Context:
 class Effect:
     """A joker's or card's answer to a context. Unset numbers have no effect.
 
-    Field names follow the game's return tables: ``chips``/``mult``/``x_mult``
-    for per-card effects, ``chip_mod``/``mult_mod``/``x_mult_mod`` for a joker's
-    main effect, ``h_mult`` for cards held in hand.
+    The game uses different names for the same changes depending on the context
+    (``chips``/``mult``/``x_mult`` per card, ``chip_mod``/``mult_mod``/``Xmult_mod``
+    for a joker's main effect, ``h_mult`` for cards held in hand). Here they are
+    always ``chips``, ``mult`` and ``x_mult``; the context decides how they apply.
     """
 
+    #: Chips added.
     chips: float | None = None
+    #: Mult added.
     mult: float | None = None
+    #: Factor the mult is multiplied by.
     x_mult: float | None = None
-    h_mult: float | None = None
-    chip_mod: float | None = None
-    mult_mod: float | None = None
-    x_mult_mod: float | None = None
+    #: Money paid to the player.
     dollars: int | None = None
     #: Swap chips and mult (``extra.swap``).
     swap: bool = False
@@ -139,23 +140,23 @@ class Effect:
         return self == Effect(source=self.source, via=self.via)
 
 
-JokerFn = Callable[[Scope, Item, Context], Effect | None]
+JokerEffect = Callable[[Scope, Item, Context], Effect | None]
 
 #: Implemented jokers, by key.
-JOKERS: dict[str, JokerFn] = {}
+JOKERS: dict[str, JokerEffect] = {}
 
 
-def joker(*keys: str) -> Callable[[JokerFn], JokerFn]:
+def register_joker(*keys: str) -> Callable[[JokerEffect], JokerEffect]:
     """Register a function as the effect of the jokers ``keys``."""
 
-    def register(fn: JokerFn) -> JokerFn:
+    def register(effect_function: JokerEffect) -> JokerEffect:
         for key in keys:
             if key not in CENTERS or not CENTERS[key].is_joker:
                 raise KeyError(f"{key!r} is not a joker")
             if key in JOKERS:
                 raise KeyError(f"{key!r} is registered twice")
-            JOKERS[key] = fn
-        return fn
+            JOKERS[key] = effect_function
+        return effect_function
 
     return register
 
@@ -228,8 +229,8 @@ def value(item: Item, name: str, default: float = 0) -> float:
     return result
 
 
-def calculate_joker(scope: Scope, item: Item, ctx: Context) -> Effect | None:
-    """How ``item`` reacts to ``ctx``; ``None`` if it doesn't.
+def calculate_joker(scope: Scope, item: Item, context: Context) -> Effect | None:
+    """How ``item`` reacts to ``context``; ``None`` if it doesn't.
 
     Source: card.lua ``Card:calculate_joker``. For the main joker context the game
     first applies rules shared by many jokers (a ``x_mult`` above 1, and the
@@ -238,52 +239,58 @@ def calculate_joker(scope: Scope, item: Item, ctx: Context) -> Effect | None:
     """
     if item.debuffed:
         return None
-    if ctx.end_of_round and ctx.kind is Ctx.INDIVIDUAL:
+    if context.end_of_round and context.kind is ContextKind.INDIVIDUAL:
         return None
-    if ctx.kind is Ctx.END_OF_ROUND and ctx.blueprint and item.key not in _COPIERS:
+    if (
+        context.kind is ContextKind.END_OF_ROUND
+        and context.blueprint
+        and item.key not in _COPY_JOKERS
+    ):
         return None
-    if ctx.kind is Ctx.JOKER_MAIN:
-        effect = _shared_main_rules(item, ctx)
+    if context.kind is ContextKind.JOKER_MAIN:
+        effect = _shared_main_rules(item, context)
         if effect is not None:
-            return _attribute(effect, item, ctx)
-    fn = JOKERS.get(item.key)
-    if fn is None:
+            return _attribute(effect, item, context)
+    effect_function = JOKERS.get(item.key)
+    if effect_function is None:
         return None
-    effect = fn(scope, item, ctx)
-    return None if effect is None else _attribute(effect, item, ctx)
+    effect = effect_function(scope, item, context)
+    return None if effect is None else _attribute(effect, item, context)
 
 
-_COPIERS = frozenset({"j_blueprint", "j_brainstorm"})
+_COPY_JOKERS = frozenset({"j_blueprint", "j_brainstorm"})
 
 
-def copy_joker(scope: Scope, copier: Item, target: Item | None, ctx: Context) -> Effect | None:
+def copy_joker(scope: Scope, copier: Item, target: Item | None, context: Context) -> Effect | None:
     """Run ``target``'s effect on behalf of ``copier`` (Blueprint, Brainstorm)."""
     if target is None or target is copier:
         return None
-    depth = ctx.blueprint + 1
+    depth = context.blueprint + 1
     if depth > len(scope.state.jokers) + 1:
         return None
-    copied = dataclasses.replace(ctx, blueprint=depth, blueprint_card=ctx.blueprint_card or copier)
+    copied = dataclasses.replace(
+        context, blueprint=depth, blueprint_card=context.blueprint_card or copier
+    )
     effect = calculate_joker(scope, target, copied)
     if effect is not None:
-        effect.via = ctx.blueprint_card or copier
+        effect.via = context.blueprint_card or copier
     return effect
 
 
-def _attribute(effect: Effect, item: Item, ctx: Context) -> Effect:
+def _attribute(effect: Effect, item: Item, context: Context) -> Effect:
     if effect.source is None:
         effect.source = item
     return effect
 
 
-def _shared_main_rules(item: Item, ctx: Context) -> Effect | None:
+def _shared_main_rules(item: Item, context: Context) -> Effect | None:
     x_mult = value(item, "x_mult", 1)
     hand_type = item.values.get("type", "")
-    applies = hand_type == "" or ctx.contains(HandType(hand_type))
+    applies = hand_type == "" or context.contains(HandType(hand_type))
     if item.key != "j_seeing_double" and x_mult > 1 and applies:
-        return Effect(x_mult_mod=x_mult)
-    if value(item, "t_mult") > 0 and hand_type and ctx.contains(HandType(hand_type)):
-        return Effect(mult_mod=value(item, "t_mult"))
-    if value(item, "t_chips") > 0 and hand_type and ctx.contains(HandType(hand_type)):
-        return Effect(chip_mod=value(item, "t_chips"))
+        return Effect(x_mult=x_mult)
+    if value(item, "t_mult") > 0 and hand_type and context.contains(HandType(hand_type)):
+        return Effect(mult=value(item, "t_mult"))
+    if value(item, "t_chips") > 0 and hand_type and context.contains(HandType(hand_type)):
+        return Effect(chips=value(item, "t_chips"))
     return None

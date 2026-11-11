@@ -31,7 +31,8 @@ __all__ = [
     "initial_hand_levels",
 ]
 
-_Groups: TypeAlias = list[list[int]]
+#: Groups of card positions, each forming one instance of a poker hand.
+CardGroups: TypeAlias = list[list[int]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,48 +101,51 @@ def evaluate_poker_hand(
     smeared: bool = False,
 ) -> PokerHands:
     """Find every poker hand that ``cards`` contain, and the best one."""
-    ids = [card_id(card) for card in cards]
-    five = _x_same(5, ids)
-    four = _x_same(4, ids)
-    three = _x_same(3, ids)
-    two = _x_same(2, ids)
+    ranks = [card_id(card) for card in cards]
+    fives = _groups_of_equal_rank(5, ranks)
+    fours = _groups_of_equal_rank(4, ranks)
+    threes = _groups_of_equal_rank(3, ranks)
+    pairs = _groups_of_equal_rank(2, ranks)
     flush = _flush(cards, four_fingers=four_fingers, smeared=smeared)
-    straight = _straight(ids, four_fingers=four_fingers, shortcut=shortcut)
+    straight = _straight(ranks, four_fingers=four_fingers, shortcut=shortcut)
     highest = _highest(cards)
 
-    results: dict[HandType, _Groups] = {hand: [] for hand in HandType}
+    results: dict[HandType, CardGroups] = {hand: [] for hand in HandType}
     top: HandType | None = None
 
-    def found(hand: HandType, groups: _Groups) -> None:
+    def found(hand: HandType, groups: CardGroups) -> None:
         nonlocal top
         results[hand] = groups
         if top is None:
             top = hand
 
-    if five and flush:
-        found(HandType.FLUSH_FIVE, five)
-    if three and two and flush:
-        found(HandType.FLUSH_HOUSE, [three[0] + two[0]])
-    if five:
-        found(HandType.FIVE_OF_A_KIND, five)
+    if fives and flush:
+        found(HandType.FLUSH_FIVE, fives)
+    if threes and pairs and flush:
+        found(HandType.FLUSH_HOUSE, [threes[0] + pairs[0]])
+    if fives:
+        found(HandType.FIVE_OF_A_KIND, fives)
     if flush and straight:
         in_flush = set(flush[0])
-        found(HandType.STRAIGHT_FLUSH, [flush[0] + [i for i in straight[0] if i not in in_flush]])
-    if four:
-        found(HandType.FOUR_OF_A_KIND, four)
-    if three and two:
-        found(HandType.FULL_HOUSE, [three[0] + two[0]])
+        found(
+            HandType.STRAIGHT_FLUSH,
+            [flush[0] + [position for position in straight[0] if position not in in_flush]],
+        )
+    if fours:
+        found(HandType.FOUR_OF_A_KIND, fours)
+    if threes and pairs:
+        found(HandType.FULL_HOUSE, [threes[0] + pairs[0]])
     if flush:
         found(HandType.FLUSH, flush)
     if straight:
         found(HandType.STRAIGHT, straight)
-    if three:
-        found(HandType.THREE_OF_A_KIND, three)
-    if len(two) == 2 or (len(three) == 1 and len(two) == 1):
-        second = two[1] if len(two) > 1 else three[0]
-        found(HandType.TWO_PAIR, [two[0] + second])
-    if two:
-        found(HandType.PAIR, two)
+    if threes:
+        found(HandType.THREE_OF_A_KIND, threes)
+    if len(pairs) == 2 or (len(threes) == 1 and len(pairs) == 1):
+        second = pairs[1] if len(pairs) > 1 else threes[0]
+        found(HandType.TWO_PAIR, [pairs[0] + second])
+    if pairs:
+        found(HandType.PAIR, pairs)
     if highest:
         found(HandType.HIGH_CARD, highest)
 
@@ -164,60 +168,65 @@ def display_name(cards: Sequence[PlayingCard], hands: PokerHands) -> str:
     if hands.top is None:
         return ""
     if hands.top is HandType.STRAIGHT_FLUSH:
-        ids = [card_id(cards[i]) for i in hands.scoring]
-        lowest = min(-1 if rank is None else rank for rank in ids)
+        ranks = [card_id(cards[position]) for position in hands.scoring]
+        lowest = min(-1 if rank is None else rank for rank in ranks)
         if lowest >= 10:
             return "Royal Flush"
     return hands.top.value
 
 
-def _x_same(num: int, ids: Sequence[int | None]) -> _Groups:
-    """Groups of exactly ``num`` cards of equal rank, highest rank first."""
+def _groups_of_equal_rank(size: int, ranks: Sequence[int | None]) -> CardGroups:
+    """Groups of exactly ``size`` cards of equal rank, highest rank first.
+
+    Source: functions/misc_functions.lua ``get_X_same``.
+    """
     by_rank: dict[int, list[int]] = {}
-    for i in range(len(ids) - 1, -1, -1):
-        rank = ids[i]
+    for i in range(len(ranks) - 1, -1, -1):
+        rank = ranks[i]
         if rank is None:
             continue
-        group = [i] + [j for j in range(len(ids)) if j != i and ids[j] == rank]
-        if len(group) == num:
+        group = [i] + [other for other in range(len(ranks)) if other != i and ranks[other] == rank]
+        if len(group) == size:
             by_rank[rank] = group
     return [by_rank[rank] for rank in range(14, 0, -1) if rank in by_rank]
 
 
-def _flush(cards: Sequence[PlayingCard], *, four_fingers: bool, smeared: bool) -> _Groups:
+def _flush(cards: Sequence[PlayingCard], *, four_fingers: bool, smeared: bool) -> CardGroups:
     needed = 4 if four_fingers else 5
     if len(cards) > 5 or len(cards) < needed:
         return []
     for suit in SUITS_IN_FLUSH_ORDER:
         members = [
-            i for i, card in enumerate(cards) if is_suit_for_flush(card, suit, smeared=smeared)
+            position
+            for position, card in enumerate(cards)
+            if is_suit_for_flush(card, suit, smeared=smeared)
         ]
         if len(members) >= needed:
             return [members]
     return []
 
 
-def _straight(ids: Sequence[int | None], *, four_fingers: bool, shortcut: bool) -> _Groups:
+def _straight(ranks: Sequence[int | None], *, four_fingers: bool, shortcut: bool) -> CardGroups:
     needed = 4 if four_fingers else 5
-    if len(ids) > 5 or len(ids) < needed:
+    if len(ranks) > 5 or len(ranks) < needed:
         return []
     by_rank: dict[int, list[int]] = {}
-    for i, rank in enumerate(ids):
+    for position, rank in enumerate(ranks):
         if rank is not None and 1 < rank < 15:
-            by_rank.setdefault(rank, []).append(i)
+            by_rank.setdefault(rank, []).append(position)
 
     members: list[int] = []
     length = 0
     is_straight = False
     skipped = False
     # The Ace is visited twice: first as the low card, then as the high card.
-    for j in range(1, 15):
-        rank = 14 if j == 1 else j
+    for step in range(1, 15):
+        rank = 14 if step == 1 else step
         if rank in by_rank:
             length += 1
             skipped = False
             members.extend(by_rank[rank])
-        elif shortcut and not skipped and j != 14:
+        elif shortcut and not skipped and step != 14:
             skipped = True
         else:
             length = 0
@@ -230,9 +239,9 @@ def _straight(ids: Sequence[int | None], *, four_fingers: bool, shortcut: bool) 
     return [members] if is_straight else []
 
 
-def _highest(cards: Sequence[PlayingCard]) -> _Groups:
+def _highest(cards: Sequence[PlayingCard]) -> CardGroups:
     best: int | None = None
-    for i, card in enumerate(cards):
+    for position, card in enumerate(cards):
         if best is None or sort_key(card) > sort_key(cards[best]):
-            best = i
+            best = position
     return [[best]] if best is not None else []

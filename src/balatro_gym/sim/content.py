@@ -56,10 +56,10 @@ class Center:
 def _freeze(value: Any) -> Any:
     if isinstance(value, dict):
         mapping: dict[str, Any] = value  # pyright: ignore[reportUnknownVariableType]
-        return MappingProxyType({str(k): _freeze(v) for k, v in mapping.items()})
+        return MappingProxyType({str(key): _freeze(entry) for key, entry in mapping.items()})
     if isinstance(value, list):
         sequence: list[Any] = value  # pyright: ignore[reportUnknownVariableType]
-        return tuple(_freeze(v) for v in sequence)
+        return tuple(_freeze(entry) for entry in sequence)
     return value
 
 
@@ -113,12 +113,12 @@ def pool(set_name: str, rarity: int | None = None) -> tuple[Center, ...]:
     For jokers, ``rarity`` selects one rarity pool (1 common to 4 legendary).
     """
     members = [
-        c
-        for c in CENTERS.values()
-        if c.set == set_name
-        and not c.raw.get("wip")
-        and not c.raw.get("omit")
-        and not c.raw.get("skip_pool")
-        and (rarity is None or c.rarity == rarity)
+        item
+        for item in CENTERS.values()
+        if item.set == set_name
+        and not item.raw.get("wip")
+        and not item.raw.get("omit")
+        and not item.raw.get("skip_pool")
+        and (rarity is None or item.rarity == rarity)
     ]
-    return tuple(sorted(members, key=lambda c: c.order))
+    return tuple(sorted(members, key=lambda item: item.order))

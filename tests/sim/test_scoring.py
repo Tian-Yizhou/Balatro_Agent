@@ -11,10 +11,10 @@ from pathlib import Path
 
 import pytest
 
-from balatro_gym.sim import actions as act
-from balatro_gym.sim import events as ev
 from balatro_gym.sim import macros
+from balatro_gym.sim.actions import CashOut
 from balatro_gym.sim.effects import JOKERS
+from balatro_gym.sim.events import CardDestroyed, EffectApplied, JokerDestroyed, MoneyChanged
 from balatro_gym.sim.items import new_item
 from balatro_gym.sim.state import HandType, Phase, PlayingCard, RunState
 from scenarios import play_hand, started_round
@@ -96,7 +96,7 @@ class TestModifiers:
     def test_lucky_card(self) -> None:
         _, events, scored = play_hand("AS", setup=chain(enhance(0, "m_lucky"), certain))
         assert scored.score == 16 * (1 + 20)
-        assert any(isinstance(e, ev.MoneyChanged) and e.delta == 20 for e in events)
+        assert any(isinstance(event, MoneyChanged) and event.delta == 20 for event in events)
         assert play_hand("AS", setup=enhance(0, "m_lucky"), seed="unlucky")[2].score in (16, 336)
 
     def test_gold_seal_pays_when_scored(self) -> None:
@@ -105,9 +105,9 @@ class TestModifiers:
 
     def test_glass_card_shatters(self) -> None:
         game, events, _ = play_hand("AS", setup=chain(enhance(0, "m_glass"), certain))
-        destroyed = [e for e in events if isinstance(e, ev.CardDestroyed)]
-        assert [e.reason for e in destroyed] == ["shattered"]
-        assert destroyed[0].uid not in {c.uid for c in game.state.playing_cards()}
+        destroyed = [event for event in events if isinstance(event, CardDestroyed)]
+        assert [event.reason for event in destroyed] == ["shattered"]
+        assert destroyed[0].uid not in {card.uid for card in game.state.playing_cards()}
         assert len(game.state.playing_cards()) == 51
 
     def test_glass_card_can_survive(self) -> None:
@@ -116,7 +116,7 @@ class TestModifiers:
             cards[0].enhancement = "m_glass"
 
         game, events, _ = play_hand("AS", setup=never)
-        assert not any(isinstance(e, ev.CardDestroyed) for e in events)
+        assert not any(isinstance(event, CardDestroyed) for event in events)
         assert len(game.state.playing_cards()) == 52
 
     def test_end_of_round_gold_card_and_blue_seal(self) -> None:
@@ -199,7 +199,7 @@ class TestJokers:
 
     def test_misprint_is_random_and_reproducible(self) -> None:
         results = {score("AS", jokers=["j_misprint"], seed=str(seed)) for seed in range(30)}
-        assert all(16 <= s <= 16 * 24 and s % 16 == 0 for s in results)
+        assert all(16 <= result <= 16 * 24 and result % 16 == 0 for result in results)
         assert len(results) > 5
         assert score("AS", jokers=["j_misprint"]) == score("AS", jokers=["j_misprint"])
 
@@ -227,7 +227,7 @@ class TestJokers:
         assert bus.values["mult"] == 1
         game.state.hands[HandType.HIGH_CARD].mult = 1
         hand = game.state.hand
-        face = next(i for i, c in enumerate(hand) if c.rank in (11, 12, 13))
+        face = next(i for i, card in enumerate(hand) if card.rank in (11, 12, 13))
         for action in macros.play_cards(game.state, [face]):
             game.step(action)
         assert bus.values["mult"] == 0
@@ -251,7 +251,9 @@ class TestJokers:
         game, events, scored = play_hand("AS", jokers=["j_ice_cream"], setup=nearly_gone)
         assert scored.score == 16 + 5
         assert game.state.jokers == []
-        assert any(isinstance(e, ev.JokerDestroyed) and e.reason == "melted" for e in events)
+        assert any(
+            isinstance(event, JokerDestroyed) and event.reason == "melted" for event in events
+        )
 
     def test_popcorn_and_gros_michel_at_end_of_round(self) -> None:
         def win(state: RunState, cards: list[PlayingCard]) -> None:
@@ -261,7 +263,7 @@ class TestJokers:
 
         game, _, _ = play_hand("AS", jokers=["j_popcorn", "j_gros_michel"], setup=win)
         state = game.state
-        assert [j.key for j in state.jokers] == ["j_popcorn"]
+        assert [joker.key for joker in state.jokers] == ["j_popcorn"]
         assert state.jokers[0].values["mult"] == 16
         assert state.pool_flags == {"gros_michel_extinct": True}
 
@@ -271,12 +273,15 @@ class TestJokers:
             state.blind.chips = 1
 
         game, _, _ = play_hand("AS", jokers=["j_golden"], setup=win)
-        assert ("j_golden", 4) in [(p.source, p.dollars) for p in game.state.payouts]
+        assert ("j_golden", 4) in [(payout.source, payout.dollars) for payout in game.state.payouts]
 
     def test_effect_events_describe_the_score(self) -> None:
         _, events, _ = play_hand("AS", jokers=["j_blueprint", "j_joker"])
-        applied = [e for e in events if isinstance(e, ev.EffectApplied)]
-        assert [(e.key, e.mult) for e in applied if e.mult] == [("j_joker", 4), ("j_joker", 4)]
+        applied = [event for event in events if isinstance(event, EffectApplied)]
+        assert [(event.key, event.mult) for event in applied if event.mult] == [
+            ("j_joker", 4),
+            ("j_joker", 4),
+        ]
         assert applied[-2].via is not None
         assert applied[-1].via is None
 
@@ -321,5 +326,5 @@ def test_new_item_values() -> None:
 
 def test_cash_out_still_works_with_jokers() -> None:
     game, _, _ = play_hand("TS JS QS KS AS", jokers=["j_joker"])
-    game.step(act.CashOut())
+    game.step(CashOut())
     assert game.state.phase is Phase.SHOP

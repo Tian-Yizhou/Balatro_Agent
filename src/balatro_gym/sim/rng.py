@@ -5,7 +5,7 @@ passes to ``pseudoseed``, for example ``"nr1"`` for the deck shuffle at the star
 of a round in ante 1, or ``"boss"`` for choosing a boss blind, so each draw can be
 traced back to the code that makes it in the original game.
 
-Draw number ``n`` on stream ``key`` is a pure function of ``(seed, key, n)``. The
+Draw number ``count`` on stream ``key`` is a pure function of ``(seed, key, count)``. The
 generator's whole state is the seed plus one counter per stream, so it is cheap to
 store in every snapshot. Streams are independent: drawing more cards never changes
 which boss or shop a later draw on another stream produces.
@@ -22,19 +22,19 @@ from typing import Any, TypeVar
 
 __all__ = ["Rng", "stable_hash"]
 
-_T = TypeVar("_T")
+Element = TypeVar("Element")
 
 _MASK64 = (1 << 64) - 1
 _GOLDEN = 0x9E3779B97F4A7C15
 _TWO_POW_MINUS_53 = 2.0**-53
 
 
-def _splitmix64(x: int) -> int:
+def _splitmix64(state: int) -> int:
     """Advance a SplitMix64 state by one step and return its output."""
-    z = (x + _GOLDEN) & _MASK64
-    z = ((z ^ (z >> 30)) * 0xBF58476D1CE4E5B9) & _MASK64
-    z = ((z ^ (z >> 27)) * 0x94D049BB133111EB) & _MASK64
-    return z ^ (z >> 31)
+    mixed = (state + _GOLDEN) & _MASK64
+    mixed = ((mixed ^ (mixed >> 30)) * 0xBF58476D1CE4E5B9) & _MASK64
+    mixed = ((mixed ^ (mixed >> 27)) * 0x94D049BB133111EB) & _MASK64
+    return mixed ^ (mixed >> 31)
 
 
 def stable_hash(text: str) -> int:
@@ -71,9 +71,9 @@ class Rng:
         if base is None:
             base = _splitmix64(self._seed_word ^ stable_hash(key))
             self._bases[key] = base
-        n = self.counters.get(key, 0)
-        self.counters[key] = n + 1
-        return _splitmix64((base + n * _GOLDEN) & _MASK64)
+        count = self.counters.get(key, 0)
+        self.counters[key] = count + 1
+        return _splitmix64((base + count * _GOLDEN) & _MASK64)
 
     def random(self, key: str) -> float:
         """Return a float uniformly distributed in ``[0, 1)``."""
@@ -86,19 +86,19 @@ class Rng:
             raise ValueError(f"empty range [{low}, {high}]")
         return low + ((self._next(key) * span) >> 64)
 
-    def choice(self, key: str, items: Sequence[_T]) -> _T:
+    def choice(self, key: str, items: Sequence[Element]) -> Element:
         """Return one element of ``items``, chosen uniformly."""
         if not items:
             raise ValueError("cannot choose from an empty sequence")
         return items[self.randint(key, 0, len(items) - 1)]
 
-    def shuffle(self, key: str, items: MutableSequence[_T]) -> None:
+    def shuffle(self, key: str, items: MutableSequence[Element]) -> None:
         """Shuffle ``items`` in place with a Fisher-Yates shuffle."""
         state = self._next(key)
         for i in range(len(items) - 1, 0, -1):
             state = _splitmix64(state)
-            j = (state * (i + 1)) >> 64
-            items[i], items[j] = items[j], items[i]
+            other = (state * (i + 1)) >> 64
+            items[i], items[other] = items[other], items[i]
 
     def to_dict(self) -> dict[str, Any]:
         return {"seed": self.seed, "counters": dict(sorted(self.counters.items()))}
@@ -106,7 +106,9 @@ class Rng:
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Rng:
         counters: Mapping[str, Any] = data["counters"]
-        return cls(str(data["seed"]), {str(k): int(v) for k, v in counters.items()})
+        return cls(
+            str(data["seed"]), {str(stream): int(count) for stream, count in counters.items()}
+        )
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, Rng):

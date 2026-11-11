@@ -79,7 +79,7 @@ class Step:
 class Replay:
     """A recorded game.
 
-    Step ``k`` is the state after the first ``k`` actions: step 0 is the initial
+    Step ``n`` is the state after the first ``n`` actions: step 0 is the initial
     state and step ``len(actions)`` is the final state. ``keyframes`` maps step
     numbers to snapshots, and ``annotations`` maps step numbers to whatever the
     agent attached to the action it took at that step.
@@ -99,7 +99,7 @@ class Replay:
         """The state after the first ``index`` actions."""
         if not 0 <= index <= self.num_steps:
             raise IndexError(f"step {index} is outside 0..{self.num_steps}")
-        start = max((k for k in self.keyframes if k <= index), default=0)
+        start = max((step for step in self.keyframes if step <= index), default=0)
         state = restore(self.keyframes[start] if start else self.initial)
         for action in self.actions[start:index]:
             step(state, action)
@@ -156,8 +156,12 @@ class Replay:
             },
             "initial": self.initial,
             "actions": [action.to_list() for action in self.actions],
-            "keyframes": [{"step": k, "state": v} for k, v in sorted(self.keyframes.items())],
-            "annotations": [{"step": k, "data": v} for k, v in sorted(self.annotations.items())],
+            "keyframes": [
+                {"step": step, "state": state} for step, state in sorted(self.keyframes.items())
+            ],
+            "annotations": [
+                {"step": step, "data": data} for step, data in sorted(self.annotations.items())
+            ],
         }
 
     @classmethod

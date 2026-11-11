@@ -7,7 +7,7 @@ import pytest
 
 from balatro_gym.replay import KeyframePolicy, Recorder, Replay, ReplayDriftError
 from balatro_gym.sim import Game, snapshot
-from balatro_gym.sim import actions as act
+from balatro_gym.sim.actions import CashOut, Play
 from balatro_gym.sim.state import Phase
 from scenarios import Policy, greedy_policy, random_policy
 
@@ -19,10 +19,10 @@ def record(
     game = Game.new(seed)
     recorder = Recorder(game, game_id=f"test-{seed}", keyframes=keyframes)
     states = [snapshot(game.state)]
-    rnd = random.Random(seed)
+    randomizer = random.Random(seed)
     while not game.is_over:
-        for action in policy(game, rnd):
-            annotation = {"choice": action.name} if isinstance(action, act.Play) else None
+        for action in policy(game, randomizer):
+            annotation = {"choice": action.name} if isinstance(action, Play) else None
             recorder.step(action, annotation)
             states.append(snapshot(game.state))
     return recorder.replay(), states
@@ -53,7 +53,7 @@ def test_round_keyframes(recorded: tuple[Replay, list[dict[str, object]]]) -> No
 def test_keyframe_policies(policy: KeyframePolicy, expected: int | None) -> None:
     replay, _ = record("policies", keyframes=policy)
     if isinstance(policy, int):
-        assert all(k % policy == 0 or k == replay.num_steps for k in replay.keyframes)
+        assert all(step % policy == 0 or step == replay.num_steps for step in replay.keyframes)
         assert len(replay.keyframes) >= replay.num_steps // policy
     else:
         assert list(replay.keyframes) == [replay.num_steps]
@@ -106,7 +106,7 @@ def test_drift_is_detected(recorded: tuple[Replay, list[dict[str, object]]]) -> 
 def test_illegal_recorded_action_is_drift(recorded: tuple[Replay, list[dict[str, object]]]) -> None:
     replay, _ = recorded
     tampered = Replay.from_dict(replay.to_dict())
-    tampered.actions[0] = act.CashOut()
+    tampered.actions[0] = CashOut()
     with pytest.raises(ReplayDriftError, match="step 0"):
         tampered.verify()
 
@@ -116,9 +116,9 @@ def test_steps_yield_events_and_annotations(
 ) -> None:
     replay, _ = recorded
     steps = list(replay.steps())
-    assert [s.index for s in steps] == list(range(replay.num_steps))
-    assert all(s.events for s in steps)
-    assert {s.index for s in steps if s.annotation} == set(replay.annotations)
+    assert [step.index for step in steps] == list(range(replay.num_steps))
+    assert all(step.events for step in steps)
+    assert {step.index for step in steps if step.annotation} == set(replay.annotations)
 
 
 def test_random_games_replay_exactly() -> None:

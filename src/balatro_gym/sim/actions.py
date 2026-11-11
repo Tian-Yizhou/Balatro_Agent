@@ -50,11 +50,11 @@ class Action:
 
     def to_list(self) -> list[str | int]:
         """The serialized form: the name followed by the action's arguments."""
-        return [self.name, *(getattr(self, f.name) for f in dataclasses.fields(self))]
+        return [self.name, *(getattr(self, field.name) for field in dataclasses.fields(self))]
 
     def __str__(self) -> str:
-        args = ", ".join(str(getattr(self, f.name)) for f in dataclasses.fields(self))
-        return f"{self.name}({args})"
+        arguments = ", ".join(str(getattr(self, field.name)) for field in dataclasses.fields(self))
+        return f"{self.name}({arguments})"
 
 
 # Card and item management, wherever the game allows it.
@@ -254,8 +254,8 @@ def parse_action(data: Sequence[str | int]) -> Action:
     cls = ACTION_TYPES.get(data[0])
     if cls is None:
         raise ValueError(f"unknown action {data[0]!r}")
-    args = data[1:]
+    arguments = data[1:]
     fields = dataclasses.fields(cls)
-    if len(args) != len(fields) or not all(type(arg) is int for arg in args):
-        raise ValueError(f"malformed arguments for {data[0]!r}: {list(args)!r}")
-    return cls(*args)
+    if len(arguments) != len(fields) or not all(type(argument) is int for argument in arguments):
+        raise ValueError(f"malformed arguments for {data[0]!r}: {list(arguments)!r}")
+    return cls(*arguments)

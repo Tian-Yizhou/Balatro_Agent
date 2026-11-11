@@ -17,43 +17,44 @@ from .state import Item, PlayingCard
 
 __all__ = [
     "LUCKY",
-    "chip_bonus",
-    "chip_h_mult",
-    "chip_h_x_mult",
-    "chip_mult",
-    "chip_x_mult",
     "edition_effect",
     "end_of_round_dollars",
     "has_room_for_consumable",
-    "p_dollars",
+    "held_mult",
+    "held_x_mult",
     "red_seal_repetitions",
+    "scoring_chips",
+    "scoring_dollars",
+    "scoring_mult",
+    "scoring_x_mult",
 ]
 
 LUCKY = "m_lucky"
 
 
-def _config(card: PlayingCard, name: str) -> float:
+def _enhancement_config(card: PlayingCard, name: str) -> float:
+    """A number from the config of the card's enhancement, such as ``"bonus"``."""
     if card.enhancement is None:
         return 0
     result: float = config_value(card.enhancement, name, 0)
     return result
 
 
-def chip_bonus(card: PlayingCard) -> float:
+def scoring_chips(card: PlayingCard) -> float:
     """Chips the card adds when it scores: its rank, plus any bonus."""
     if card.debuffed:
         return 0
-    bonus = _config(card, "bonus") + card.perma_bonus
+    bonus = _enhancement_config(card, "bonus") + card.perma_bonus
     if card.enhancement == STONE:
         return bonus
     return nominal(card) + bonus
 
 
-def chip_mult(scope: Scope, card: PlayingCard) -> tuple[float, bool]:
+def scoring_mult(scope: Scope, card: PlayingCard) -> tuple[float, bool]:
     """Mult the card adds when it scores, and whether a Lucky Card triggered."""
     if card.debuffed:
         return 0, False
-    mult = _config(card, "mult")
+    mult = _enhancement_config(card, "mult")
     if card.enhancement == LUCKY:
         if scope.chance("lucky_mult", 5):
             return mult, True
@@ -61,36 +62,36 @@ def chip_mult(scope: Scope, card: PlayingCard) -> tuple[float, bool]:
     return mult, False
 
 
-def chip_x_mult(card: PlayingCard) -> float:
+def scoring_x_mult(card: PlayingCard) -> float:
     """The card's x-mult when it scores, or 0 if it has none."""
     if card.debuffed:
         return 0
-    x_mult = _config(card, "Xmult") or 1
+    x_mult = _enhancement_config(card, "Xmult") or 1
     return x_mult if x_mult > 1 else 0
 
 
-def chip_h_mult(card: PlayingCard) -> float:
-    return 0 if card.debuffed else _config(card, "h_mult")
+def held_mult(card: PlayingCard) -> float:
+    return 0 if card.debuffed else _enhancement_config(card, "h_mult")
 
 
-def chip_h_x_mult(card: PlayingCard) -> float:
-    return 0 if card.debuffed else _config(card, "h_x_mult")
+def held_x_mult(card: PlayingCard) -> float:
+    return 0 if card.debuffed else _enhancement_config(card, "h_x_mult")
 
 
-def p_dollars(scope: Scope, card: PlayingCard) -> tuple[int, bool]:
+def scoring_dollars(scope: Scope, card: PlayingCard) -> tuple[int, bool]:
     """Money the card pays when it scores, and whether a Lucky Card triggered."""
     if card.debuffed:
         return 0, False
     dollars = 3 if card.seal == "Gold" else 0
     lucky = False
-    pay = int(_config(card, "p_dollars"))
-    if pay > 0:
+    payout = int(_enhancement_config(card, "p_dollars"))
+    if payout > 0:
         if card.enhancement == LUCKY:
             if scope.chance("lucky_money", 15):
-                dollars += pay
+                dollars += payout
                 lucky = True
         else:
-            dollars += pay
+            dollars += payout
     return dollars, lucky
 
 
@@ -126,16 +127,16 @@ def end_of_round_dollars(scope: Scope, card: PlayingCard) -> tuple[int, bool]:
     """
     if card.debuffed:
         return 0, False
-    dollars = int(_config(card, "h_dollars"))
+    dollars = int(_enhancement_config(card, "h_dollars"))
     acted = dollars > 0
     if card.seal == "Blue" and has_room_for_consumable(scope):
         acted = True
         hand = scope.state.last_hand_played
         if hand is not None:
             planet = next(
-                c.key
-                for c in CENTERS.values()
-                if c.set == "Planet" and c.config.get("hand_type") == hand.value
+                item.key
+                for item in CENTERS.values()
+                if item.set == "Planet" and item.config.get("hand_type") == hand.value
             )
             scope.defer(lambda: _add_consumable(scope, new_item(scope.state, planet)))
     return dollars, acted

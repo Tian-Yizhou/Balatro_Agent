@@ -21,7 +21,7 @@ from typing import Protocol
 
 from .blinds import lua_floor
 from .cards import STONE
-from .effects import Area, Context, Ctx, Effect, calculate_joker, find_joker
+from .effects import Area, Context, ContextKind, Effect, calculate_joker, find_joker
 from .events import (
     CardDestroyed,
     CardRetriggered,
@@ -32,14 +32,14 @@ from .events import (
 )
 from .hands import HAND_BASE, PokerHands, evaluate_poker_hand
 from .modifiers import (
-    chip_bonus,
-    chip_h_mult,
-    chip_h_x_mult,
-    chip_mult,
-    chip_x_mult,
     edition_effect,
-    p_dollars,
+    held_mult,
+    held_x_mult,
     red_seal_repetitions,
+    scoring_chips,
+    scoring_dollars,
+    scoring_mult,
+    scoring_x_mult,
 )
 from .scope import Scope
 from .state import HandType, Item, PlayingCard
@@ -71,11 +71,13 @@ def level_up_hand(scope: Scope, hand: HandType, amount: int = 1) -> None:
 
 
 class _ContextFactory(Protocol):
-    def __call__(self, kind: Ctx, area: Area | None = Area.JOKERS, **fields: object) -> Context: ...
+    def __call__(
+        self, kind: ContextKind, area: Area | None = Area.JOKERS, **fields: object
+    ) -> Context: ...
 
 
 @dataclass(slots=True)
-class _Score:
+class _RunningScore:
     chips: float
     mult: float
 
@@ -106,8 +108,10 @@ def evaluate_play(scope: Scope, played: list[PlayingCard]) -> list[PlayingCard]:
         )
     )
 
-    def context(kind: Ctx, area: Area | None = Area.JOKERS, **fields: object) -> Context:
-        ctx = Context(
+    def make_context(
+        kind: ContextKind, area: Area | None = Area.JOKERS, **fields: object
+    ) -> Context:
+        context = Context(
             kind,
             area=area,
             full_hand=played,
@@ -116,28 +120,30 @@ def evaluate_play(scope: Scope, played: list[PlayingCard]) -> list[PlayingCard]:
             poker_hands=hands,
         )
         for name, field_value in fields.items():
-            setattr(ctx, name, field_value)
-        return ctx
+            setattr(context, name, field_value)
+        return context
 
     destroyed: list[PlayingCard] = []
     for joker in list(state.jokers):
-        effect = calculate_joker(scope, joker, context(Ctx.BEFORE))
+        effect = calculate_joker(scope, joker, make_context(ContextKind.BEFORE))
         if effect is not None and effect.level_up:
             level_up_hand(scope, hand, effect.level_up)
 
-    score = _Score(chips=float(level.chips), mult=float(level.mult))
+    score = _RunningScore(chips=float(level.chips), mult=float(level.mult))
     for card in scoring:
         if not card.debuffed:
-            _score_played_card(scope, card, score, context)
+            _score_played_card(scope, card, score, make_context)
     for card in list(state.hand):
-        _score_held_card(scope, card, score, context)
+        _score_held_card(scope, card, score, make_context)
     for joker in list(state.jokers):
-        _score_joker(scope, joker, score, context)
+        _score_joker(scope, joker, score, make_context)
 
     for card in scoring:
         is_destroyed = False
         for joker in list(state.jokers):
-            effect = calculate_joker(scope, joker, context(Ctx.DESTROYING_CARD, other_card=card))
+            effect = calculate_joker(
+                scope, joker, make_context(ContextKind.DESTROYING_CARD, other_card=card)
+            )
             if effect is not None and effect.remove:
                 is_destroyed = True
                 break
@@ -147,7 +153,9 @@ def evaluate_play(scope: Scope, played: list[PlayingCard]) -> list[PlayingCard]:
         if is_destroyed:
             destroyed.append(card)
     for joker in list(state.jokers):
-        calculate_joker(scope, joker, context(Ctx.REMOVE_PLAYING_CARDS, removed=destroyed))
+        calculate_joker(
+            scope, joker, make_context(ContextKind.REMOVE_PLAYING_CARDS, removed=destroyed)
+        )
     for card in destroyed:
         reason = "shattered" if card.enhancement == GLASS else "destroyed"
         scope.emit(CardDestroyed(card.uid, reason))
@@ -159,73 +167,77 @@ def evaluate_play(scope: Scope, played: list[PlayingCard]) -> list[PlayingCard]:
     )
     scope.flush()
     for joker in list(state.jokers):
-        calculate_joker(scope, joker, context(Ctx.AFTER))
+        calculate_joker(scope, joker, make_context(ContextKind.AFTER))
     scope.flush()
     return destroyed
 
 
 def _score_played_card(
-    scope: Scope, card: PlayingCard, score: _Score, context: _ContextFactory
+    scope: Scope, card: PlayingCard, score: _RunningScore, make_context: _ContextFactory
 ) -> None:
+    """Score one played card, once plus once per retrigger."""
     state = scope.state
     retriggers: list[Effect] = [Effect()] * red_seal_repetitions(card)
     for joker in list(state.jokers):
-        effect = calculate_joker(scope, joker, context(Ctx.REPETITION, Area.PLAY, other_card=card))
+        effect = calculate_joker(
+            scope, joker, make_context(ContextKind.REPETITION, Area.PLAY, other_card=card)
+        )
         if effect is not None and effect.repetitions:
             retriggers.extend([effect] * effect.repetitions)
 
-    for rep in [None, *retriggers]:
-        if rep is not None:
-            source = rep.via or rep.source
-            scope.emit(
-                CardRetriggered(card.uid, source.uid if source else card.uid, _key(rep, "seal"))
-            )
-        own, lucky = _evaluate_played_card(scope, card)
-        effects: list[Effect] = [own]
+    for retrigger in [None, *retriggers]:
+        if retrigger is not None:
+            _emit_retrigger(scope, card, retrigger)
+        card_effect, lucky = _evaluate_played_card(scope, card)
+        effects: list[Effect] = [card_effect]
         for joker in list(state.jokers):
             effect = calculate_joker(
                 scope,
                 joker,
-                context(Ctx.INDIVIDUAL, Area.PLAY, other_card=card, lucky_trigger=lucky),
+                make_context(
+                    ContextKind.INDIVIDUAL, Area.PLAY, other_card=card, lucky_trigger=lucky
+                ),
             )
             if effect is not None:
                 effects.append(effect)
         for effect in effects:
-            _apply_card_effect(scope, effect, card, score)
+            _apply_played_card_effect(scope, effect, card, score)
 
 
 def _evaluate_played_card(scope: Scope, card: PlayingCard) -> tuple[Effect, bool]:
-    """A scoring card's own effects (``eval_card`` with ``cardarea = G.play``)."""
-    own = Effect()
-    chips = chip_bonus(card)
+    """A scoring card's own effects (``eval_card`` with ``cardarea = G.play``).
+
+    Returns the effect and whether a Lucky Card triggered.
+    """
+    card_effect = Effect()
+    chips = scoring_chips(card)
     if chips > 0:
-        own.chips = chips
-    mult, lucky_mult = chip_mult(scope, card)
+        card_effect.chips = chips
+    mult, lucky_mult = scoring_mult(scope, card)
     if mult > 0:
-        own.mult = mult
-    x_mult = chip_x_mult(card)
+        card_effect.mult = mult
+    x_mult = scoring_x_mult(card)
     if x_mult > 0:
-        own.x_mult = x_mult
-    dollars, lucky_money = p_dollars(scope, card)
+        card_effect.x_mult = x_mult
+    dollars, lucky_money = scoring_dollars(scope, card)
     if dollars > 0:
-        own.dollars = dollars
+        card_effect.dollars = dollars
     if card.edition is not None and not card.debuffed:
-        own.edition = edition_effect(card.edition, card.debuffed)
-    return own, lucky_mult or lucky_money
+        card_effect.edition = edition_effect(card.edition, card.debuffed)
+    return card_effect, lucky_mult or lucky_money
 
 
-def _apply_card_effect(scope: Scope, effect: Effect, card: PlayingCard, score: _Score) -> None:
-    """Apply one effect on a scoring card, in the game's order of fields."""
+def _apply_played_card_effect(
+    scope: Scope, effect: Effect, card: PlayingCard, score: _RunningScore
+) -> None:
+    """Apply one effect on a scoring card, in the game's order: chips, mult, money,
+    swap, x-mult, then the card's edition."""
     if effect.chips is not None:
         score.chips += effect.chips
     if effect.mult is not None:
         score.mult += effect.mult
     if effect.dollars is not None:
         scope.change_money(effect.dollars, "scoring")
-    if effect.mult_mod is not None:
-        score.mult += effect.mult_mod
-    if effect.chip_mod is not None:
-        score.chips += effect.chip_mod
     if effect.swap:
         score.chips, score.mult = score.mult, score.chips
     if effect.x_mult is not None:
@@ -240,55 +252,62 @@ def _apply_card_effect(scope: Scope, effect: Effect, card: PlayingCard, score: _
 
 
 def _score_held_card(
-    scope: Scope, card: PlayingCard, score: _Score, context: _ContextFactory
+    scope: Scope, card: PlayingCard, score: _RunningScore, make_context: _ContextFactory
 ) -> None:
+    """Apply the effects of one card held in hand, once plus once per retrigger.
+
+    Retriggers are only counted on the first pass, and a Red Seal only retriggers
+    a card that has an effect.
+    """
     state = scope.state
-    reps: list[Effect | None] = [None]
+    passes: list[Effect | None] = [None]
     index = 0
-    while index < len(reps):
-        rep = reps[index]
-        if rep is not None:
-            source = rep.via or rep.source
-            scope.emit(
-                CardRetriggered(card.uid, source.uid if source else card.uid, _key(rep, "seal"))
-            )
-        own = Effect()
-        h_mult = chip_h_mult(card)
-        if h_mult > 0:
-            own.h_mult = h_mult
-        h_x_mult = chip_h_x_mult(card)
-        if h_x_mult > 0:
-            own.x_mult = h_x_mult
-        effects: list[Effect] = [own]
+    while index < len(passes):
+        retrigger = passes[index]
+        if retrigger is not None:
+            _emit_retrigger(scope, card, retrigger)
+        card_effect = Effect()
+        mult = held_mult(card)
+        if mult > 0:
+            card_effect.mult = mult
+        x_mult = held_x_mult(card)
+        if x_mult > 0:
+            card_effect.x_mult = x_mult
+        effects: list[Effect] = [card_effect]
         for joker in list(state.jokers):
             effect = calculate_joker(
-                scope, joker, context(Ctx.INDIVIDUAL, Area.HAND, other_card=card)
+                scope, joker, make_context(ContextKind.INDIVIDUAL, Area.HAND, other_card=card)
             )
             if effect is not None:
                 effects.append(effect)
         if index == 0:
-            if red_seal_repetitions(card) and (not own.is_empty() or len(effects) > 1):
-                reps.append(Effect())
+            if red_seal_repetitions(card) and (not card_effect.is_empty() or len(effects) > 1):
+                passes.append(Effect())
             for joker in list(state.jokers):
                 effect = calculate_joker(
                     scope,
                     joker,
-                    context(Ctx.REPETITION, Area.HAND, other_card=card, card_effects=effects),
+                    make_context(
+                        ContextKind.REPETITION, Area.HAND, other_card=card, card_effects=effects
+                    ),
                 )
                 if effect is not None and effect.repetitions:
-                    reps.extend([effect] * effect.repetitions)
+                    passes.extend([effect] * effect.repetitions)
         for effect in effects:
             if effect.dollars is not None:
                 scope.change_money(effect.dollars, "scoring")
-            if effect.h_mult is not None:
-                score.mult += effect.h_mult
+            if effect.mult is not None:
+                score.mult += effect.mult
             if effect.x_mult is not None:
                 score.mult *= effect.x_mult
             _emit_effect(scope, effect, card, own_key="held")
         index += 1
 
 
-def _score_joker(scope: Scope, joker: Item, score: _Score, context: _ContextFactory) -> None:
+def _score_joker(
+    scope: Scope, joker: Item, score: _RunningScore, make_context: _ContextFactory
+) -> None:
+    """Apply a joker's edition, its main effect, and other jokers' reactions to it."""
     state = scope.state
     chips, mult, x_mult = edition_effect(joker.edition, joker.debuffed)
     if chips or mult:
@@ -296,11 +315,13 @@ def _score_joker(scope: Scope, joker: Item, score: _Score, context: _ContextFact
         score.mult += mult
         _emit_edition(scope, joker.uid, joker.edition or "", None, (chips, mult, 1))
 
-    effect = calculate_joker(scope, joker, context(Ctx.JOKER_MAIN))
+    effect = calculate_joker(scope, joker, make_context(ContextKind.JOKER_MAIN))
     if effect is not None:
         _apply_joker_effect(scope, effect, score)
     for other in list(state.jokers):
-        effect = calculate_joker(scope, other, context(Ctx.OTHER_JOKER, other_joker=joker))
+        effect = calculate_joker(
+            scope, other, make_context(ContextKind.OTHER_JOKER, other_joker=joker)
+        )
         if effect is not None:
             _apply_joker_effect(scope, effect, score)
 
@@ -309,25 +330,27 @@ def _score_joker(scope: Scope, joker: Item, score: _Score, context: _ContextFact
         _emit_edition(scope, joker.uid, joker.edition or "", None, (0, 0, x_mult))
 
 
-def _apply_joker_effect(scope: Scope, effect: Effect, score: _Score) -> None:
-    if effect.mult_mod is not None:
-        score.mult += effect.mult_mod
-    if effect.chip_mod is not None:
-        score.chips += effect.chip_mod
-    if effect.x_mult_mod is not None:
-        score.mult *= effect.x_mult_mod
+def _apply_joker_effect(scope: Scope, effect: Effect, score: _RunningScore) -> None:
+    if effect.mult is not None:
+        score.mult += effect.mult
+    if effect.chips is not None:
+        score.chips += effect.chips
+    if effect.x_mult is not None:
+        score.mult *= effect.x_mult
     _emit_effect(scope, effect, None, own_key="joker")
 
 
-def _key(effect: Effect, fallback: str) -> str:
-    return effect.source.key if effect.source is not None else fallback
+def _emit_retrigger(scope: Scope, card: PlayingCard, retrigger: Effect) -> None:
+    source = retrigger.via or retrigger.source
+    key = retrigger.source.key if retrigger.source is not None else "seal"
+    scope.emit(CardRetriggered(card.uid, source.uid if source else card.uid, key))
 
 
 def _emit_effect(scope: Scope, effect: Effect, card: PlayingCard | None, *, own_key: str) -> None:
     """Record an applied effect for viewers; neutral effects are not recorded."""
-    chips = (effect.chips or 0) + (effect.chip_mod or 0)
-    mult = (effect.mult or 0) + (effect.mult_mod or 0) + (effect.h_mult or 0)
-    x_mult = effect.x_mult if effect.x_mult is not None else (effect.x_mult_mod or 1)
+    chips = effect.chips or 0
+    mult = effect.mult or 0
+    x_mult = effect.x_mult if effect.x_mult is not None else 1
     dollars = effect.dollars or 0
     if not (chips or mult or x_mult != 1 or dollars or effect.swap):
         return

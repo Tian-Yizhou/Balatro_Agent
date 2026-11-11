@@ -55,7 +55,7 @@ def _layer_files(layer: str) -> list[Path]:
 
 
 def test_every_subpackage_has_rules() -> None:
-    subpackages = {p.parent.name for p in (SRC / ROOT).glob("*/__init__.py")}
+    subpackages = {path.parent.name for path in (SRC / ROOT).glob("*/__init__.py")}
     assert subpackages == set(ALLOWED)
 
 

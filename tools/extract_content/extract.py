@@ -48,11 +48,13 @@ def _to_python(lua: Any, value: Any) -> Any:
     keys = list(value.keys())
     if (
         keys
-        and all(isinstance(k, int) for k in keys)
+        and all(isinstance(key, int) for key in keys)
         and sorted(keys) == list(range(1, len(keys) + 1))
     ):
         return [_to_python(lua, value[i]) for i in range(1, len(keys) + 1)]
-    return {str(k): _to_python(lua, value[k]) for k in sorted(keys, key=str) if k not in DROPPED}
+    return {
+        str(key): _to_python(lua, value[key]) for key in sorted(keys, key=str) if key not in DROPPED
+    }
 
 
 def main() -> int:

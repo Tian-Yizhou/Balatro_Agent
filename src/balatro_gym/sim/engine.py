@@ -37,7 +37,7 @@ from .actions import (
 )
 from .blinds import BLINDS, choose_boss, get_blind_amount
 from .cards import sort_key
-from .effects import Area, Context, Ctx, Effect, calculate_joker
+from .effects import Area, Context, ContextKind, Effect, calculate_joker
 from .events import (
     AnteChanged,
     BlindSelected,
@@ -217,7 +217,12 @@ def legal_actions(state: RunState) -> list[Action]:
             if card.selected or selected < SELECTION_LIMIT:
                 actions.append(ToggleCard(i))
         size = len(state.hand)
-        actions.extend(MoveCard(i, j) for i in range(size) for j in range(size) if i != j)
+        actions.extend(
+            MoveCard(source, target)
+            for source in range(size)
+            for target in range(size)
+            if source != target
+        )
         if state.hand:
             actions.extend((SortByRank(), SortBySuit()))
     elif phase is Phase.ROUND_EVAL:
@@ -228,7 +233,12 @@ def legal_actions(state: RunState) -> list[Action]:
         actions.extend((ContinueEndless(), EndRun()))
     if phase in _JOKER_MOVE_PHASES:
         size = len(state.jokers)
-        actions.extend(MoveJoker(i, j) for i in range(size) for j in range(size) if i != j)
+        actions.extend(
+            MoveJoker(source, target)
+            for source in range(size)
+            for target in range(size)
+            if source != target
+        )
     return actions
 
 
@@ -265,21 +275,23 @@ def _check_discard(state: RunState, _: Discard) -> bool:
 
 
 _CHECKS: dict[type[Action], Callable[[RunState, Any], bool]] = {
-    SelectBlind: lambda s, _: s.phase is Phase.BLIND_SELECT,
+    SelectBlind: lambda state, _: state.phase is Phase.BLIND_SELECT,
     ToggleCard: _check_toggle,
-    MoveCard: lambda s, a: (
-        s.phase is Phase.SELECTING_HAND and _is_move_legal(len(s.hand), a.source, a.target)
+    MoveCard: lambda state, action: (
+        state.phase is Phase.SELECTING_HAND
+        and _is_move_legal(len(state.hand), action.source, action.target)
     ),
-    SortByRank: lambda s, _: s.phase is Phase.SELECTING_HAND and bool(s.hand),
-    SortBySuit: lambda s, _: s.phase is Phase.SELECTING_HAND and bool(s.hand),
+    SortByRank: lambda state, _: state.phase is Phase.SELECTING_HAND and bool(state.hand),
+    SortBySuit: lambda state, _: state.phase is Phase.SELECTING_HAND and bool(state.hand),
     Play: _check_play,
     Discard: _check_discard,
-    CashOut: lambda s, _: s.phase is Phase.ROUND_EVAL,
-    EndShop: lambda s, _: s.phase is Phase.SHOP,
-    ContinueEndless: lambda s, _: s.phase is Phase.WIN,
-    EndRun: lambda s, _: s.phase is Phase.WIN,
-    MoveJoker: lambda s, a: (
-        s.phase in _JOKER_MOVE_PHASES and _is_move_legal(len(s.jokers), a.source, a.target)
+    CashOut: lambda state, _: state.phase is Phase.ROUND_EVAL,
+    EndShop: lambda state, _: state.phase is Phase.SHOP,
+    ContinueEndless: lambda state, _: state.phase is Phase.WIN,
+    EndRun: lambda state, _: state.phase is Phase.WIN,
+    MoveJoker: lambda state, action: (
+        state.phase in _JOKER_MOVE_PHASES
+        and _is_move_legal(len(state.jokers), action.source, action.target)
     ),
 }
 
@@ -389,7 +401,7 @@ def _new_round(scope: Scope, slot: BlindSlot) -> None:
     blind = _set_blind(state, state.blind_choices[slot], slot)
     scope.emit(BlindSelected(slot, blind.key, blind.chips))
     for joker in list(state.jokers):
-        calculate_joker(scope, joker, Context(Ctx.SETTING_BLIND))
+        calculate_joker(scope, joker, Context(ContextKind.SETTING_BLIND))
     scope.flush()
     _shuffle(state, f"nr{state.ante}")
     _draw_to_hand(scope)
@@ -422,7 +434,7 @@ def _draw_to_hand(scope: Scope) -> None:
         scope.emit(CardsDrawn(tuple(card.uid for card in drawn)))
     if state.hands_played_this_round == 0 and state.discards_used_this_round == 0:
         for joker in list(state.jokers):
-            calculate_joker(scope, joker, Context(Ctx.FIRST_HAND_DRAWN))
+            calculate_joker(scope, joker, Context(ContextKind.FIRST_HAND_DRAWN))
         scope.flush()
     scope.set_phase(Phase.SELECTING_HAND)
     if not state.hand and not state.deck:
@@ -464,13 +476,13 @@ def _discard(scope: Scope, _: Discard) -> None:
     state = scope.state
     cards = _take_selected(state)
     for joker in list(state.jokers):
-        calculate_joker(scope, joker, Context(Ctx.PRE_DISCARD, full_hand=cards))
+        calculate_joker(scope, joker, Context(ContextKind.PRE_DISCARD, full_hand=cards))
     destroyed: list[PlayingCard] = []
     for card in cards:
         removed = False
         for joker in list(state.jokers):
             effect = calculate_joker(
-                scope, joker, Context(Ctx.DISCARD, full_hand=cards, other_card=card)
+                scope, joker, Context(ContextKind.DISCARD, full_hand=cards, other_card=card)
             )
             if effect is not None and effect.remove:
                 removed = True
@@ -485,7 +497,9 @@ def _discard(scope: Scope, _: Discard) -> None:
     if destroyed:
         for joker in list(state.jokers):
             calculate_joker(
-                scope, joker, Context(Ctx.REMOVE_PLAYING_CARDS, Area.JOKERS, removed=destroyed)
+                scope,
+                joker,
+                Context(ContextKind.REMOVE_PLAYING_CARDS, Area.JOKERS, removed=destroyed),
             )
     scope.flush()
     state.discards_left -= 1
@@ -502,7 +516,7 @@ def _end_round(scope: Scope) -> None:
     game_over = not beaten
     for joker in list(state.jokers):
         effect = calculate_joker(
-            scope, joker, Context(Ctx.END_OF_ROUND, end_of_round=True, game_over=game_over)
+            scope, joker, Context(ContextKind.END_OF_ROUND, end_of_round=True, game_over=game_over)
         )
         if effect is not None and effect.saved:
             game_over = False
@@ -545,20 +559,20 @@ def _end_round(scope: Scope) -> None:
 def _end_of_round_held_card(scope: Scope, card: PlayingCard) -> None:
     """Effects of a card held in hand when the round ends, with retriggers."""
     state = scope.state
-    reps = 1
+    passes = 1
     index = 0
-    while index < reps:
+    while index < passes:
         dollars, acted = end_of_round_dollars(scope, card)
         if index == 0:
             effects: list[Effect | None] = [None if not acted else Effect(dollars=dollars)]
             if red_seal_repetitions(card) and acted:
-                reps += 1
+                passes += 1
             for joker in list(state.jokers):
                 effect = calculate_joker(
                     scope,
                     joker,
                     Context(
-                        Ctx.REPETITION,
+                        ContextKind.REPETITION,
                         Area.HAND,
                         other_card=card,
                         end_of_round=True,
@@ -566,7 +580,7 @@ def _end_of_round_held_card(scope: Scope, card: PlayingCard) -> None:
                     ),
                 )
                 if effect is not None and effect.repetitions:
-                    reps += effect.repetitions
+                    passes += effect.repetitions
         if dollars:
             scope.change_money(dollars, "held_card")
         index += 1

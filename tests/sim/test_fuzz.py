@@ -9,7 +9,16 @@ import random
 import pytest
 
 from balatro_gym.sim import Game, IllegalActionError, is_legal, legal_actions, snapshot
-from balatro_gym.sim import actions as act
+from balatro_gym.sim.actions import (
+    ACTION_TYPES,
+    Action,
+    Buy,
+    MoveCard,
+    MoveJoker,
+    Pick,
+    SellJoker,
+    ToggleCard,
+)
 from balatro_gym.sim.effects import JOKERS
 from balatro_gym.sim.engine import SELECTION_LIMIT
 from balatro_gym.sim.events import CardDestroyed
@@ -18,17 +27,17 @@ from balatro_gym.sim.state import Phase, RunState
 from scenarios import Policy, greedy_policy, play_game, random_policy
 
 
-def candidate_actions(state: RunState) -> list[act.Action]:
+def candidate_actions(state: RunState) -> list[Action]:
     """Every action with arguments near the valid ranges, legal or not."""
     hand = range(-1, len(state.hand) + 1)
     jokers = range(-1, len(state.jokers) + 1)
-    candidates: list[act.Action] = [
-        cls() for cls in act.ACTION_TYPES.values() if not dataclasses.fields(cls)
+    candidates: list[Action] = [
+        cls() for cls in ACTION_TYPES.values() if not dataclasses.fields(cls)
     ]
-    candidates += [act.ToggleCard(i) for i in hand]
-    candidates += [act.MoveCard(i, j) for i in hand for j in hand]
-    candidates += [act.MoveJoker(i, j) for i in jokers for j in jokers]
-    candidates += [cls(i) for cls in (act.SellJoker, act.Buy, act.Pick) for i in range(2)]
+    candidates += [ToggleCard(i) for i in hand]
+    candidates += [MoveCard(source, target) for source in hand for target in hand]
+    candidates += [MoveJoker(source, target) for source in jokers for target in jokers]
+    candidates += [cls(i) for cls in (SellJoker, Buy, Pick) for i in range(2)]
     return candidates
 
 
@@ -45,21 +54,23 @@ def check_invariants(game: Game, uids: set[int]) -> None:
         assert len(state.hand) <= max(state.hand_size, 0) or not state.deck
     legal = legal_actions(state)
     assert len(legal) == len(set(legal))
-    assert set(legal) == {a for a in candidate_actions(state) if is_legal(state, a)}
+    assert set(legal) == {action for action in candidate_actions(state) if is_legal(state, action)}
     assert bool(legal) != state.is_over
 
 
-def equip(game: Game, rnd: random.Random) -> None:
+def equip(game: Game, randomizer: random.Random) -> None:
     """Give the player random implemented jokers and random card modifiers."""
     state = game.state
-    for key in rnd.sample(sorted(JOKERS), 5):
+    for key in randomizer.sample(sorted(JOKERS), 5):
         joker = new_item(state, key)
-        joker.edition = rnd.choice([None, None, "e_foil", "e_holo", "e_polychrome"])
+        joker.edition = randomizer.choice([None, None, "e_foil", "e_holo", "e_polychrome"])
         state.jokers.append(joker)
     for card in state.deck:
-        card.enhancement = rnd.choice([None, None, None, *ENHANCEMENTS])
-        card.edition = rnd.choice([None, None, None, None, "e_foil", "e_holo", "e_polychrome"])
-        card.seal = rnd.choice([None, None, None, None, "Red", "Gold", "Blue"])
+        card.enhancement = randomizer.choice([None, None, None, *ENHANCEMENTS])
+        card.edition = randomizer.choice(
+            [None, None, None, None, "e_foil", "e_holo", "e_polychrome"]
+        )
+        card.seal = randomizer.choice([None, None, None, None, "Red", "Gold", "Blue"])
 
 
 ENHANCEMENTS = ["m_bonus", "m_mult", "m_wild", "m_glass", "m_steel", "m_stone", "m_gold", "m_lucky"]
@@ -78,13 +89,13 @@ ENHANCEMENTS = ["m_bonus", "m_mult", "m_wild", "m_glass", "m_steel", "m_stone", 
 def test_invariants_hold(policy: Policy, seeds: range, equipped: bool) -> None:
     for seed in seeds:
         game = Game.new(seed)
-        rnd = random.Random(seed)
+        randomizer = random.Random(seed)
         if equipped:
-            equip(game, rnd)
+            equip(game, randomizer)
         uids = {card.uid for card in game.state.playing_cards()}
         steps = 0
         while not game.is_over and steps < 3000:
-            for action in policy(game, rnd):
+            for action in policy(game, randomizer):
                 for event in game.step(action):
                     if isinstance(event, CardDestroyed):
                         uids.discard(event.uid)

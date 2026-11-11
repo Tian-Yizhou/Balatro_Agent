@@ -30,7 +30,7 @@ __all__ = [
     "to_data",
 ]
 
-_T = TypeVar("_T")
+Value = TypeVar("Value")
 _SCALARS: tuple[type, ...] = (bool, int, float, str)
 
 
@@ -38,27 +38,27 @@ class SnapshotError(ValueError):
     """A snapshot is malformed or was written by an incompatible schema."""
 
 
-def to_data(obj: object) -> Any:
+def to_data(value: object) -> Any:
     """Convert an engine object into JSON-compatible data."""
-    if obj is None or (isinstance(obj, _SCALARS) and not isinstance(obj, enum.Enum)):
-        return obj
-    if isinstance(obj, enum.Enum):
-        return obj.value
-    if isinstance(obj, Rng):
-        return obj.to_dict()
-    if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
-        return {name: to_data(getattr(obj, name)) for name in _field_names(type(obj))}
-    if isinstance(obj, list | tuple):
-        return [to_data(item) for item in cast("list[object]", obj)]
-    if isinstance(obj, dict):
-        items = cast("dict[object, object]", obj).items()
-        return {_key_to_data(key): to_data(value) for key, value in items}
-    raise TypeError(f"cannot serialize {type(obj).__name__}")
+    if value is None or (isinstance(value, _SCALARS) and not isinstance(value, enum.Enum)):
+        return value
+    if isinstance(value, enum.Enum):
+        return value.value
+    if isinstance(value, Rng):
+        return value.to_dict()
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return {name: to_data(getattr(value, name)) for name in _field_names(type(value))}
+    if isinstance(value, list | tuple):
+        return [to_data(item) for item in cast("list[object]", value)]
+    if isinstance(value, dict):
+        items = cast("dict[object, object]", value).items()
+        return {_key_to_data(key): to_data(entry) for key, entry in items}
+    raise TypeError(f"cannot serialize {type(value).__name__}")
 
 
-def from_data(tp: type[_T], data: Any) -> _T:
-    """Rebuild an object of type ``tp`` from the output of :func:`to_data`."""
-    return cast("_T", _from_data(tp, data))
+def from_data(target_type: type[Value], data: Any) -> Value:
+    """Rebuild an object of type ``target_type`` from the output of :func:`to_data`."""
+    return cast("Value", _from_data(target_type, data))
 
 
 def snapshot(state: RunState) -> dict[str, Any]:
@@ -83,8 +83,8 @@ def restore(data: Mapping[str, Any]) -> RunState:
         )
     try:
         return from_data(RunState, data["state"])
-    except (KeyError, TypeError, ValueError) as exc:
-        raise SnapshotError(f"malformed snapshot: {exc}") from exc
+    except (KeyError, TypeError, ValueError) as error:
+        raise SnapshotError(f"malformed snapshot: {error}") from error
 
 
 def clone(state: RunState) -> RunState:
@@ -98,7 +98,7 @@ def clone(state: RunState) -> RunState:
 
 @cache
 def _field_names(cls: type) -> tuple[str, ...]:
-    return tuple(f.name for f in dataclasses.fields(cls))
+    return tuple(field.name for field in dataclasses.fields(cls))
 
 
 @cache
@@ -114,34 +114,34 @@ def _key_to_data(key: object) -> str:
     raise TypeError(f"dict keys must be strings or enums, not {type(key).__name__}")
 
 
-def _from_data(tp: Any, data: Any) -> Any:
-    origin = typing.get_origin(tp)
+def _from_data(target_type: Any, data: Any) -> Any:
+    origin = typing.get_origin(target_type)
     if origin is typing.Union or origin is types.UnionType:
-        return _from_union(typing.get_args(tp), data)
+        return _from_union(typing.get_args(target_type), data)
     if origin is list:
-        (item_tp,) = typing.get_args(tp)
-        return [_from_data(item_tp, item) for item in data]
+        (item_type,) = typing.get_args(target_type)
+        return [_from_data(item_type, item) for item in data]
     if origin is tuple:
-        item_tp = typing.get_args(tp)[0]
-        return tuple(_from_data(item_tp, item) for item in data)
+        item_type = typing.get_args(target_type)[0]
+        return tuple(_from_data(item_type, item) for item in data)
     if origin is dict:
-        key_tp, value_tp = typing.get_args(tp)
+        key_type, value_type = typing.get_args(target_type)
         return {
-            _from_data(key_tp, key): _from_data(value_tp, value)
+            _from_data(key_type, key): _from_data(value_type, value)
             for key, value in cast("dict[str, Any]", data).items()
         }
-    if tp is Any:
+    if target_type is Any:
         return data
-    if tp is float:
+    if target_type is float:
         if not isinstance(data, int | float) or isinstance(data, bool):
             raise TypeError(f"expected a number, got {data!r}")
         return float(data)
-    if tp in (bool, int, str):
-        if type(data) is not tp:
-            raise TypeError(f"expected {tp.__name__}, got {data!r}")
+    if target_type in (bool, int, str):
+        if type(data) is not target_type:
+            raise TypeError(f"expected {target_type.__name__}, got {data!r}")
         return data
-    if isinstance(tp, type):
-        cls = cast("type[Any]", tp)
+    if isinstance(target_type, type):
+        cls = cast("type[Any]", target_type)
         if issubclass(cls, enum.Enum):
             return cls(data)
         if cls is Rng:
@@ -152,17 +152,17 @@ def _from_data(tp: Any, data: Any) -> Any:
             return cls(
                 **{name: _from_data(hints[name], fields[name]) for name in _field_names(cls)}
             )
-    raise TypeError(f"cannot deserialize type {tp!r}")
+    raise TypeError(f"cannot deserialize type {target_type!r}")
 
 
-def _from_union(args: tuple[Any, ...], data: Any) -> Any:
+def _from_union(member_types: tuple[Any, ...], data: Any) -> Any:
     if data is None:
-        if type(None) in args:
+        if type(None) in member_types:
             return None
         raise TypeError("unexpected null")
-    members = [arg for arg in args if arg is not type(None)]
+    members = [member for member in member_types if member is not type(None)]
     if len(members) == 1:
         return _from_data(members[0], data)
-    if all(arg in _SCALARS for arg in members) and isinstance(data, _SCALARS):
+    if all(member in _SCALARS for member in members) and isinstance(data, _SCALARS):
         return data
-    raise TypeError(f"cannot deserialize union {args!r} from {data!r}")
+    raise TypeError(f"cannot deserialize union {member_types!r} from {data!r}")
