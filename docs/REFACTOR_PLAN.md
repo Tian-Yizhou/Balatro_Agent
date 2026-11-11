@@ -1,6 +1,6 @@
 # Balatro-Agent v2: Refactor Plan
 
-> **Status:** agreed · M0 done (PR #1) · M1 done (PRs #4, #5) · M2 in progress · **Last updated:** 2026-11-10
+> **Status:** agreed · M0 done (PR #1) · M1 done (PRs #4, #5) · M2 done (PRs #6, #7) · M3 in progress · **Last updated:** 2026-11-11
 >
 > Decisions are listed in §2. Any new open questions go in §12, and nothing open is
 > built until it is agreed.
