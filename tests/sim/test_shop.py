@@ -26,34 +26,14 @@ from balatro_gym.sim.events import Event, ItemBought, RunEnded
 from balatro_gym.sim.items import new_item
 from balatro_gym.sim.scope import Scope
 from balatro_gym.sim.shop import create_card_for_shop
-from balatro_gym.sim.state import BlindSlot, HandType, Item, Phase, RunConfig, RunState, Suit
-from scenarios import set_hand, started_round
-
-
-def in_shop(seed: str = "shop", config: RunConfig | None = None) -> Game:
-    """A game standing in the shop after winning the small blind."""
-    game = Game.new(seed, config)
-    game.step(SelectBlind())
-    state = game.state
-    assert state.blind is not None
-    state.blind.chips = 1
-    for action in macros.play_cards(state, [0]):
-        game.step(action)
-    game.step(CashOut())
-    assert state.phase is Phase.SHOP
-    return game
+from balatro_gym.sim.state import BlindSlot, HandType, Item, RunConfig, RunState, Suit
+from scenarios import give, in_shop, set_hand, started_round
 
 
 def stock(state: RunState, *keys: str) -> list[Item]:
     """Replace the shop's cards with new items ``keys``."""
     state.shop_cards = [new_item(state, key) for key in keys]
     return state.shop_cards
-
-
-def give(state: RunState, key: str) -> Item:
-    item = new_item(state, key)
-    (state.jokers if CENTERS[key].is_joker else state.consumables).append(item)
-    return item
 
 
 class TestShop:
@@ -460,10 +440,11 @@ class TestTarots:
         assert [CENTERS[card.key].set for card in game.state.consumables] == ["Tarot"]
 
 
-def test_every_tarot_and_planet_is_implemented() -> None:
-    expected = {key for key, center in CENTERS.items() if center.set in ("Tarot", "Planet")}
+def test_every_consumable_is_implemented() -> None:
+    sets = ("Tarot", "Planet", "Spectral")
+    expected = {key for key, center in CENTERS.items() if center.set in sets}
     assert expected == IMPLEMENTED
-    assert len(IMPLEMENTED) == 34
+    assert len(IMPLEMENTED) == 52
 
 
 def test_egg_grows_its_sell_value() -> None:
@@ -477,6 +458,19 @@ def test_egg_grows_its_sell_value() -> None:
     for action in macros.play_cards(state, [0]):
         game.step(action)
     assert egg.sell_value == before + 3
+
+
+def test_perkeo_copies_a_consumable_when_leaving_the_shop() -> None:
+    game = in_shop("perkeo")
+    state = game.state
+    give(state, "j_perkeo")
+    give(state, "c_pluto")
+    game.step(EndShop())
+    assert [(item.key, item.edition) for item in state.consumables] == [
+        ("c_pluto", None),
+        ("c_pluto", "e_negative"),
+    ]
+    assert state.consumables[1].sell_value == 4
 
 
 def test_gros_michel_extinction_unlocks_cavendish() -> None:

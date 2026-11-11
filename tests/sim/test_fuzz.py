@@ -14,6 +14,7 @@ from balatro_gym.sim.actions import (
     Action,
     Buy,
     BuyAndUse,
+    BuyPack,
     MoveCard,
     MoveJoker,
     Pick,
@@ -22,9 +23,10 @@ from balatro_gym.sim.actions import (
     ToggleCard,
     UseConsumable,
 )
+from balatro_gym.sim.consumables import IMPLEMENTED as CONSUMABLES
 from balatro_gym.sim.effects import JOKERS
 from balatro_gym.sim.engine import SELECTION_LIMIT
-from balatro_gym.sim.events import CardDestroyed
+from balatro_gym.sim.events import CardDestroyed, PlayingCardCreated
 from balatro_gym.sim.items import new_item
 from balatro_gym.sim.state import RunState
 from scenarios import Policy, greedy_policy, play_game, random_policy
@@ -45,7 +47,9 @@ def candidate_actions(state: RunState) -> list[Action]:
     candidates += [cls(i) for cls in (Buy, BuyAndUse) for i in shop]
     candidates += [SellJoker(i) for i in jokers]
     candidates += [cls(i) for cls in (SellConsumable, UseConsumable) for i in consumables]
-    candidates += [Pick(i) for i in range(2)]
+    candidates += [BuyPack(i) for i in range(-1, len(state.shop_boosters) + 1)]
+    pack_size = state.pack.size if state.pack is not None else 0
+    candidates += [Pick(i) for i in range(-1, pack_size + 1)]
     return candidates
 
 
@@ -65,8 +69,9 @@ def check_invariants(game: Game, uids: set[int]) -> None:
 
 
 def equip(game: Game, randomizer: random.Random) -> None:
-    """Give the player random implemented jokers and random card modifiers."""
+    """Give the player random implemented jokers, consumables and card modifiers."""
     state = game.state
+    state.consumables = [new_item(state, key) for key in randomizer.sample(sorted(CONSUMABLES), 2)]
     for key in randomizer.sample(sorted(JOKERS), 5):
         joker = new_item(state, key)
         joker.edition = randomizer.choice([None, None, "e_foil", "e_holo", "e_polychrome"])
@@ -105,6 +110,8 @@ def test_invariants_hold(policy: Policy, seeds: range, equipped: bool) -> None:
                 for event in game.step(action):
                     if isinstance(event, CardDestroyed):
                         uids.discard(event.uid)
+                    elif isinstance(event, PlayingCardCreated):
+                        uids.add(event.uid)
                 steps += 1
                 check_invariants(game, uids)
             if steps % 50 == 0:

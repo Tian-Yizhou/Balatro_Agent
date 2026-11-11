@@ -15,7 +15,11 @@ import json
 import sys
 from pathlib import Path
 
-from consumable_scenarios import random_consumable_scenarios, random_shop_scenarios
+from consumable_scenarios import (
+    random_consumable_scenarios,
+    random_pack_scenarios,
+    random_shop_scenarios,
+)
 from harness import (
     CardSpec,
     LuaGame,
@@ -24,7 +28,7 @@ from harness import (
     parse_cards,
     random_hand_cases,
 )
-from rules import LuaRules, discard, end_of_round, score, shop, use_consumable
+from rules import LuaRules, discard, end_of_round, open_pack, score, shop, use_consumable
 from scoring_scenarios import (
     random_discard_scenarios,
     random_round_end_scenarios,
@@ -32,6 +36,7 @@ from scoring_scenarios import (
 )
 
 from balatro_gym.sim.consumables import IMPLEMENTED as CONSUMABLES
+from balatro_gym.sim.content import pool
 from balatro_gym.sim.effects import JOKERS
 
 #: Jokers compared against the game. Misprint's mult is random, so it is checked
@@ -111,6 +116,11 @@ def main() -> int:
     payload["shop"] = [
         {"scenario": scenario, "expected": shop(rules, scenario)}
         for scenario in random_shop_scenarios(20261111, 80, sorted(JOKERS), consumables)
+    ]
+    packs = [center.key for center in pool("Booster")]
+    payload["pack"] = [
+        {"scenario": scenario, "expected": open_pack(rules, scenario)}
+        for scenario in random_pack_scenarios(20261111, 96, packs, VERIFIED_JOKERS)
     ]
     _write("lua_rules.json.gz", payload)
     return 0

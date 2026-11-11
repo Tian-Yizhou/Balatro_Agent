@@ -28,7 +28,12 @@ __all__ = [
 Area = Literal["shop", "jokers", "consumables", "pack"]
 
 # The fallback when every item of a pool is unavailable.
-_FALLBACK = {"Tarot": "c_strength", "Tarot_Planet": "c_strength", "Planet": "c_pluto"}
+_FALLBACK = {
+    "Tarot": "c_strength",
+    "Tarot_Planet": "c_strength",
+    "Planet": "c_pluto",
+    "Spectral": "c_incantation",
+}
 _FALLBACK_DEFAULT = "j_joker"
 
 _consumables: Callable[[str], bool] = lambda key: False  # noqa: E731
@@ -71,7 +76,8 @@ def is_available(state: RunState, center: Center) -> bool:
 
 def _used_keys(state: RunState) -> set[str]:
     """Keys of every joker and consumable that currently exists (``G.GAME.used_jokers``)."""
-    return {item.key for item in (*state.jokers, *state.consumables, *state.shop_cards)}
+    in_pack = state.pack.items if state.pack is not None else ()
+    return {item.key for item in (*state.jokers, *state.consumables, *state.shop_cards, *in_pack)}
 
 
 def poll_edition(
@@ -101,14 +107,19 @@ def create_card(
     rarity: float | None = None,
     legendary: bool = False,
     forced_key: str | None = None,
+    soulable: bool = False,
 ) -> Item:
     """Create a joker or consumable of ``set_name``, drawn from its pool.
 
     ``area`` is where the card is going, which decides whether a shop joker
-    rolls stickers. The card is not placed anywhere.
+    rolls stickers. The card is not placed anywhere. A ``soulable`` card (one
+    in a booster pack) may instead be The Soul or Black Hole, which never appear
+    in their pools.
     """
     state = scope.state
     ante = state.ante
+    if forced_key is None and soulable:
+        forced_key = _soul_roll(scope, set_name)
     if forced_key is not None:
         key = forced_key
     else:
@@ -120,6 +131,30 @@ def create_card(
         item.edition = poll_edition(scope, f"edi{key_append}{ante}")
     set_cost(state, item)
     return item
+
+
+def _soul_roll(scope: Scope, set_name: str) -> str | None:
+    """The rare chance for a pack card to be The Soul or Black Hole.
+
+    Source: functions/common_events.lua ``create_card`` (``soulable``).
+    """
+    state = scope.state
+    key = f"soul_{set_name}{state.ante}"
+    showman = bool(find_joker(state, "j_ring_master"))
+    used = _used_keys(state)
+    forced = None
+    # Each check draws from the same stream; the second can override the first.
+    soul_allowed = "c_soul" not in used or showman
+    if (
+        set_name in ("Tarot", "Spectral", "Tarot_Planet")
+        and soul_allowed
+        and scope.rng.random(key) > 0.997
+    ):
+        forced = "c_soul"
+    black_hole_allowed = "c_black_hole" not in used or showman
+    if set_name in ("Planet", "Spectral") and black_hole_allowed and scope.rng.random(key) > 0.997:
+        forced = "c_black_hole"
+    return forced
 
 
 def _draw_from_pool(

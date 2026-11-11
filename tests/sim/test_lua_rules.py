@@ -20,13 +20,16 @@ from typing import Any
 import pytest
 
 from balatro_gym.sim.consumables import IMPLEMENTED as CONSUMABLES
+from balatro_gym.sim.content import pool
 from balatro_gym.sim.effects import JOKERS
 from scenarios import (
     compare_consumable_use,
+    compare_open_pack,
     compare_results,
     compare_shop,
     engine_discard,
     engine_end_of_round,
+    engine_open_pack,
     engine_score,
     engine_shop,
     engine_use_consumable,
@@ -83,6 +86,7 @@ live = pytest.mark.skipif(
 VERIFIED_JOKERS = sorted(key for key in JOKERS if key != "j_misprint")
 VERIFIED_SEALS = ("Red", "Gold", "Blue", "Purple")
 IMPLEMENTED = set(JOKERS) | set(CONSUMABLES)
+PACKS = [center.key for center in pool("Booster")]
 
 
 @pytest.fixture(scope="module")
@@ -145,6 +149,34 @@ def test_shop_matches_original_game_vectors() -> None:
     for number, case in enumerate(cases):
         expected = _json_keys_to_int(case["expected"])
         problems = compare_shop(engine_shop(case["scenario"]), expected, IMPLEMENTED)
+        if problems:
+            mismatches.append((number, problems))
+    assert mismatches == []
+
+
+def test_packs_match_original_game_vectors() -> None:
+    cases = _vectors()["pack"]
+    assert len(cases) >= len(PACKS)
+    mismatches = []
+    for number, case in enumerate(cases):
+        expected = case["expected"]
+        ours = engine_open_pack(case["scenario"], expected["cards"])
+        problems = compare_open_pack(ours, expected)
+        if problems:
+            mismatches.append((number, problems))
+    assert mismatches == []
+
+
+@live
+def test_random_pack_openings_match(lua: Any) -> None:
+    scenarios = _load("consumable_scenarios")
+    open_in_game = _load("rules").open_pack
+    mismatches = []
+    for number, scenario in enumerate(
+        scenarios.random_pack_scenarios(1, 640, PACKS, VERIFIED_JOKERS)
+    ):
+        game = open_in_game(lua, scenario)
+        problems = compare_open_pack(engine_open_pack(scenario, game["cards"]), game)
         if problems:
             mismatches.append((number, problems))
     assert mismatches == []

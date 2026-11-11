@@ -31,7 +31,8 @@ from .effects import (
     register_joker,
     value,
 )
-from .items import set_cost
+from .events import ItemCreated
+from .items import copy_item, set_cost
 from .scope import Scope
 from .state import BlindSlot, Item
 
@@ -517,4 +518,63 @@ def _while_owned(scope: Scope, joker: Item, context: Context) -> Effect | None:
     """Juggler (+1 hand size), Drunkard (+1 discard), Credit Card (go up to $20 into
     debt) and Chaos the Clown (one free reroll per shop) act while owned, through
     ``inventory.add_to_deck``. Showman lets the shop offer items the player has."""
+    return None
+
+
+# Legendary jokers, which only The Soul creates.
+
+
+@register_joker("j_caino")
+def _canio(scope: Scope, joker: Item, context: Context) -> Effect | None:
+    """Canio (``Caino`` in the game's data): gains x``extra`` (1) mult for each face
+    card destroyed; applies its ``caino_xmult``."""
+    if context.kind is ContextKind.REMOVE_PLAYING_CARDS and not context.blueprint:
+        faces = sum(is_face(scope.state, card) for card in context.removed)
+        if faces > 0:
+            joker.values["caino_xmult"] = value(joker, "caino_xmult") + faces * value(
+                joker, "extra"
+            )
+        return None
+    if context.kind is ContextKind.JOKER_MAIN and value(joker, "caino_xmult") > 1:
+        return Effect(x_mult=value(joker, "caino_xmult"))
+    return None
+
+
+@register_joker("j_triboulet")
+def _triboulet(scope: Scope, joker: Item, context: Context) -> Effect | None:
+    """Each scoring King and Queen gives x``extra`` (2) mult."""
+    if _is_scoring_card(context) and _other_card_rank(context) in (12, 13):
+        return Effect(x_mult=value(joker, "extra"))
+    return None
+
+
+@register_joker("j_yorick")
+def _yorick(scope: Scope, joker: Item, context: Context) -> Effect | None:
+    """Gains x``extra.xmult`` (1) mult every ``extra.discards`` (23) cards discarded,
+    counting down in ``yorick_discards``. Its ``x_mult`` is applied by the shared
+    main rule."""
+    if context.kind is ContextKind.DISCARD and not context.blueprint:
+        if value(joker, "yorick_discards") <= 1:
+            joker.values["yorick_discards"] = value(joker, "extra.discards")
+            joker.values["x_mult"] = value(joker, "x_mult", 1) + value(joker, "extra.xmult")
+            return Effect()
+        joker.values["yorick_discards"] = value(joker, "yorick_discards") - 1
+    return None
+
+
+@register_joker("j_perkeo")
+def _perkeo(scope: Scope, joker: Item, context: Context) -> Effect | None:
+    """When the shop is left, adds a Negative copy of a random consumable held."""
+    state = scope.state
+    if context.kind is ContextKind.ENDING_SHOP and state.consumables:
+
+        def duplicate() -> None:
+            choices = sorted(state.consumables, key=lambda item: item.uid)
+            copy = copy_item(state, scope.rng.choice("perkeo", choices))
+            copy.edition = "e_negative"
+            set_cost(state, copy)
+            state.consumables.append(copy)
+            scope.emit(ItemCreated(copy.uid, copy.key, "consumables"))
+
+        scope.defer(duplicate)
     return None
