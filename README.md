@@ -23,6 +23,7 @@ environment for AI agents: reinforcement learning, LLM agents and search.
 | `src/balatro_gym/env` | Agent-facing environment (Gymnasium) |
 | `src/balatro_gym/serve` | Game dispatcher and remote step server |
 | `tests/` | Test suite |
+| `tools/` | Development tools, such as the Lua differential harness |
 | `docs/` | Plan and architecture decision records |
 
 ## Development
@@ -37,6 +38,9 @@ uv run ruff format --check   # formatting
 uv run pyright               # type check
 uv run pre-commit install    # optional: lint and format on every commit
 ```
+
+Tests that compare the engine with the original game's Lua code need a local copy
+of the game's source; see [tools/lua_harness](tools/lua_harness/README.md).
 
 ## Contributing
 
