@@ -1,6 +1,6 @@
 # Balatro-Agent v2: Refactor Plan
 
-> **Status:** agreed, ready for M0 · **Branch:** `refactor/v2` · **Last updated:** 2026-11-10
+> **Status:** agreed · M0 done (PR #1) · **Last updated:** 2026-11-10
 >
 > Decisions are listed in §2. Any new open questions go in §12, and nothing open is
 > built until it is agreed.
@@ -85,7 +85,7 @@ The ADR index (`docs/adr/README.md`) lists these decisions. Later decisions get 
 | `replay` | Replay file format, recorder, re-simulation, text renderer | `sim` (+ zstd, optional) |
 | `env` | Observation encoders, action codec, Gymnasium env, vectorized env, rewards, difficulty presets | `sim`, `replay`, numpy, gymnasium |
 | `serve` | Dispatcher, remote step server, Ray integration | `sim`, `env`, `replay` (+ ray / grpc, optional) |
-| `agents/` | Baselines and training code (later, ported from `dev`) | everything above + torch / ray |
+| `agents/` | Baselines and training code (later, ported from v1) | everything above + torch / ray |
 
 **Dependency rule:** `sim` imports nothing from the other packages, and there are no
 import cycles. Tests enforce this.
@@ -303,10 +303,10 @@ flag exists for research baselines that should see everything.
   hand size rather than quadratically. The exact layout is defined in M7.
 - **Gymnasium env and vectorized env:** many games run in one process, with
   auto-reset.
-- **Reward functions are pluggable,** building on `dev`'s `RewardContext` idea but fed
+- **Reward functions are pluggable,** building on v1's `RewardContext` idea but fed
   by engine events.
 - **Difficulty presets** set the content pools, ante limit, stake and deck (keeping
-  `dev`'s plug-in idea).
+  v1's plug-in idea).
 - **Every env records a replay by default** (it's cheap), and has a hook so the agent
   can attach annotations.
 
@@ -417,12 +417,14 @@ tests/
   sim/  replay/  env/  serve/  golden/
 tools/
   extract_content/  lua_harness/  bench/
-agents/                       later, ported from dev
+agents/                       later, ported from v1
 pyproject.toml · lockfile · .pre-commit-config.yaml
 README.md · CONTRIBUTING.md · CLAUDE.md · CHANGELOG.md · LICENSE
 ```
 - **Legacy code (D13):** v1 code and docs are removed from the new tree. They stay
-  available in git history, on the `dev` branch, and under a `v1-legacy` tag.
+  available under three tags: `v1-legacy` (the old `main`), `v1-legacy-dev` and
+  `v1-legacy-action-coverage` (the old `dev` and `test/action-coverage-sync`
+  branches, which are deleted).
 - **Lua source (D16):**
   - It lives only on the owner's machine, in the working directory, ignored through
     `.git/info/exclude` (not `.gitignore`). The tools find it through
@@ -435,9 +437,9 @@ README.md · CONTRIBUTING.md · CLAUDE.md · CHANGELOG.md · LICENSE
 ### 10.2 Branches (D13)
 - **`main` is protected:** changes arrive only through PRs, CI must pass, and
   force-pushes are blocked.
-- **`refactor/v2`** carries M0 only. Once M0 merges, `main` *is* v2, and all later
-  work follows the normal short-lived-branch flow.
-- **`dev` is retired:** kept as an archive, with no new work.
+- **Work branches** start from `main` and merge back through a PR. When to open a
+  branch is a judgment call, set out in `CONTRIBUTING.md` §2. There is no long-lived
+  integration branch: `main` is always releasable, and tags mark stable snapshots.
 
 ### 10.3 Commits and pull requests
 The rules live in [`CONTRIBUTING.md`](../CONTRIBUTING.md), which is the single source
@@ -512,7 +514,7 @@ Applied in M0 through the GitHub API:
 | **M9** | Web replay viewer | Steps through any stored replay |
 
 M7 can start in parallel once M2 has fixed the engine API. After M9: port the agents
-from `dev`, then challenges, mods and the real-game bridge.
+from v1, then challenges, mods and the real-game bridge.
 
 ---
 
