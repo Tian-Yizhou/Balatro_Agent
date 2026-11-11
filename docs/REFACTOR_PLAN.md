@@ -152,7 +152,7 @@ These are the canonical actions. Agents send them, and replays record them.
 | Where | Actions |
 |---|---|
 | Wherever the game allows | `toggle_card(i)`, `move_card(i, j)`, `move_joker(i, j)`, `sell_joker(i)`, `sell_consumable(i)`, `use_consumable(i)` (the selected cards are its targets) |
-| Blind select | `select_blind`, `skip_blind` |
+| Blind select | `select_blind`, `skip_blind`, `reroll_boss` (with Director's Cut or Retcon; ADR 0004) |
 | Selecting hand | `play`, `discard`, `sort_by_rank`, `sort_by_suit` |
 | Round evaluation | `cash_out` |
 | Shop | `buy(i)`, `buy_and_use(i)`, `redeem_voucher(i)`, `buy_pack(i)`, `reroll`, `end_shop` |
@@ -523,7 +523,7 @@ Applied in M0 through the GitHub API:
 | **M0** | Repo refactor and development rules (§10): layout, `pyproject`, tooling, `.github/`, CONTRIBUTING, CLAUDE.md, ADR index, legacy removed, Lua untracked | CI is green on the empty skeleton; branch protection is on; merged to `main` |
 | **M1** | Engine foundations: state model, keyed RNG, snapshot/restore, events, the atomic and macro action framework, the round loop with plain cards, replay format, recorder and text renderer, Lua harness | Snapshots round-trip; replays are deterministic; Lua differential tests pass for hand evaluation and blind amounts |
 | **M2** | Content data extraction; the scoring pipeline with full context dispatch; enhancements, editions and seals; a starter set of jokers covering every context; a weighted shop (jokers, tarots, planets) with buying, selling and rerolls; all planets and tarots; run options (`max_ante`, endless) | Random agents finish full games; **throughput benchmark → Python/Rust checkpoint** |
-| **M3** | Spectral cards, packs and the pack phase, vouchers, tags with skipping, all bosses, decks, stakes and stickers | Scenario tests for every item |
+| **M3** | Spectral cards, packs and the pack phase, vouchers, tags with skipping, all bosses, decks, stakes and stickers; the 5 legendary jokers, so The Soul works | Scenario tests for every item |
 | **M4** | The remaining jokers, in batches by mechanism: passive → conditional → scaling → retrigger → copy → economy → create/destroy → probability | Scenario tests for every joker |
 | **M5** | Profiles and unlock progression (the all-unlocked default exists from M2) | Progression runs from a fresh profile; the profile-merge rules are tested |
 | **M6** | Validation hardening: nightly fuzzing, statistical checks, more golden replays | Nightly job is green |
