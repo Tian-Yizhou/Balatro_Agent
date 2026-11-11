@@ -20,12 +20,14 @@ class Scope:
     ``flush`` runs it at the point where the game's queue would.
     """
 
-    __slots__ = ("_deferred", "events", "state")
+    __slots__ = ("_deferred", "consumable_buffer", "events", "state")
 
     def __init__(self, state: RunState) -> None:
         self.state = state
         self.events: list[Event] = []
         self._deferred: list[Callable[[], None]] = []
+        #: Consumables queued for creation but not yet added (``G.GAME.consumeable_buffer``).
+        self.consumable_buffer = 0
 
     @property
     def rng(self) -> Rng:

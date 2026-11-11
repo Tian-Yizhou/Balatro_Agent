@@ -114,9 +114,11 @@ def red_seal_repetitions(card: PlayingCard) -> int:
 
 
 def has_room_for_consumable(scope: Scope) -> bool:
+    """Whether a consumable slot is free, counting consumables already queued."""
     state = scope.state
     negatives = sum(item.edition == "e_negative" for item in state.consumables)
-    return len(state.consumables) < state.consumable_slots + negatives
+    limit = state.consumable_slots + negatives
+    return len(state.consumables) + scope.consumable_buffer < limit
 
 
 def end_of_round_dollars(scope: Scope, card: PlayingCard) -> tuple[int, bool]:
@@ -132,6 +134,7 @@ def end_of_round_dollars(scope: Scope, card: PlayingCard) -> tuple[int, bool]:
     if card.seal == "Blue" and has_room_for_consumable(scope):
         acted = True
         hand = scope.state.last_hand_played
+        scope.consumable_buffer += 1
         if hand is not None:
             planet = next(
                 item.key
@@ -144,3 +147,4 @@ def end_of_round_dollars(scope: Scope, card: PlayingCard) -> tuple[int, bool]:
 
 def _add_consumable(scope: Scope, item: Item) -> None:
     scope.state.consumables.append(item)
+    scope.consumable_buffer = 0
