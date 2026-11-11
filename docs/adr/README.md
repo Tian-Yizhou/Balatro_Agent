@@ -54,4 +54,7 @@ The decisions taken while planning v2 are recorded in
 
 ## Records
 
-None yet. New decisions start at `0001`.
+| ADR | Decision |
+|---|---|
+| [0001](0001-mutating-step-with-clone.md) | Steps change the state in place; copies are explicit |
+| [0002](0002-lua-harness-with-lupa.md) | Lua differential tests run on lupa, with committed test vectors |

@@ -1,6 +1,6 @@
 # Balatro-Agent v2: Refactor Plan
 
-> **Status:** agreed · M0 done (PR #1) · **Last updated:** 2026-11-10
+> **Status:** agreed · M0 done (PR #1) · M1 in progress · **Last updated:** 2026-11-10
 >
 > Decisions are listed in §2. Any new open questions go in §12, and nothing open is
 > built until it is agreed.
@@ -81,7 +81,7 @@ The ADR index (`docs/adr/README.md`) lists these decisions. Later decisions get 
 
 | Package | Responsibility | Runtime deps |
 |---|---|---|
-| `sim` | The pure engine: `(state, action) → (state, events)` | standard library only |
+| `sim` | The deterministic engine: `(state, action) → events`, changing the state in place (ADR 0001) | standard library only |
 | `replay` | Replay file format, recorder, re-simulation, text renderer | `sim` (+ zstd, optional) |
 | `env` | Observation encoders, action codec, Gymnasium env, vectorized env, rewards, difficulty presets | `sim`, `replay`, numpy, gymnasium |
 | `serve` | Dispatcher, remote step server, Ray integration | `sim`, `env`, `replay` (+ ray / grpc, optional) |
@@ -128,8 +128,9 @@ card and item has a stable `uid`.
 - **Phase:** the current phase plus phase-specific data (for example, how many picks
   remain in an open pack).
 
-Serialization uses `to_dict()` / `from_dict()`: JSON for people to read, and
-msgpack + zstd for storage. The schema carries a version number. A snapshot is a few KB.
+Snapshots (`snapshot()` / `restore()`) are JSON-compatible data that carry the state
+schema version. A snapshot at the start of a run is about 14 KB of JSON; replays
+store snapshots compressed.
 
 ### 4.2 Phases
 The phases mirror the game's `G.STATES`, with animations removed:
@@ -201,8 +202,9 @@ These are the canonical actions. Agents send them, and replays record them.
   and then that stream's counter goes up by 1. `mix` is a 64-bit integer mixer such
   as splitmix64. `stable_hash` must give the same value on every machine. Python's
   built-in `hash()` is salted per process, so it is never used.
-- **Stream keys** follow the game's own scheme: `shuffle_<ante>`, `shop_type_<ante>`,
-  `rarity_<ante>`, `boss`, `lucky_mult`, `wheel_of_fortune`, and so on.
+- **Stream keys** are the seed strings the game passes to `pseudoseed`: `nr<ante>`
+  (the deck shuffle at the start of each round), `cashout<ante>`, `boss`,
+  `lucky_mult`, `wheel_of_fortune`, and so on. A shuffle uses one draw from its stream.
   - Because each stream is separate, shop rolls don't depend on how many cards were drawn.
   - So two agents on the same seed see largely the same shops, bosses and tags.
   - That makes comparisons between agents, and "what if" branches, much cleaner.
@@ -363,9 +365,11 @@ every state of a finished game.
 
 ## 8. Validation
 1. **Lua differential tests** for functions that stand alone (`evaluate_poker_hand`,
-   `get_blind_amount`, …). These run the original Lua under LuaJIT, with the game
-   functions it calls replaced by simple stand-ins (`tools/lua_harness/`). The harness
-   reads the local Lua copy, which is never committed.
+   `get_blind_amount`, …). These run the original Lua under LuaJIT from the `lupa`
+   package, with the game functions it calls replaced by simple stand-ins
+   (`tools/lua_harness/`). The harness reads the local Lua copy, which is never
+   committed, and writes test vectors (inputs and the game's outputs) that are
+   committed, so CI checks them too (ADR 0002).
 2. **Scenario tests:** at least one per content item (each joker, consumable, voucher,
    tag, boss, deck and stake). Each sets up a specific state and checks the score,
    money and side effects that the Lua code implies.
@@ -471,7 +475,7 @@ Applied in M0 through the GitHub API:
 ### 10.6 Code standards
 - **Tooling:**
   - Python 3.11 or newer, managed with `uv` and a lockfile (D15). CI runs on
-    3.11–3.13. LuaJIT for the test harness comes from `apt`.
+    3.11–3.13. LuaJIT for the test harness comes from the `lupa` package (ADR 0002).
   - Full type hints in `sim`.
   - `ruff` for linting and formatting.
   - Strict type checking in `sim` with `pyright` (D13).
@@ -504,8 +508,8 @@ Applied in M0 through the GitHub API:
 | # | Milestone | Done when |
 |---|---|---|
 | **M0** | Repo refactor and development rules (§10): layout, `pyproject`, tooling, `.github/`, CONTRIBUTING, CLAUDE.md, ADR index, legacy removed, Lua untracked | CI is green on the empty skeleton; branch protection is on; merged to `main` |
-| **M1** | Engine foundations: state model, keyed RNG, snapshot/restore, events, the atomic and macro action framework, replay format, recorder and text renderer, Lua harness | Snapshots round-trip; replays are deterministic; Lua differential tests pass for hand evaluation and blind amounts |
-| **M2** | Core loop with plain cards: blind select, round, the scoring pipeline with full context dispatch, cash out, a weighted shop (jokers, tarots, planets), game over, win, endless | Random agents finish full games; **throughput benchmark → Python/Rust checkpoint** |
+| **M1** | Engine foundations: state model, keyed RNG, snapshot/restore, events, the atomic and macro action framework, the round loop with plain cards, replay format, recorder and text renderer, Lua harness | Snapshots round-trip; replays are deterministic; Lua differential tests pass for hand evaluation and blind amounts |
+| **M2** | The scoring pipeline with full context dispatch, a weighted shop (jokers, tarots, planets) with buying and selling, run options (`max_ante`, endless) | Random agents finish full games; **throughput benchmark → Python/Rust checkpoint** |
 | **M3** | Card modifiers, consumables, packs and the pack phase, vouchers, tags with skipping, all bosses, decks, stakes and stickers | Scenario tests for every item |
 | **M4** | All 150 jokers, in batches by mechanism: passive → conditional → scaling → retrigger → copy → economy → create/destroy → probability | Scenario tests for every joker |
 | **M5** | Profiles and unlock progression (the all-unlocked default exists from M2) | Progression runs from a fresh profile; the profile-merge rules are tested |
