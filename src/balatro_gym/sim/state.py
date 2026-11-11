@@ -24,6 +24,7 @@ __all__ = [
     "HandSort",
     "HandType",
     "Item",
+    "OpenPack",
     "Payout",
     "Phase",
     "PlayingCard",
@@ -145,6 +146,34 @@ class Item:
 
 
 @dataclass(slots=True)
+class OpenPack:
+    """A booster pack being opened.
+
+    A Standard pack holds playing cards; every other pack holds jokers or
+    consumables. Source: card.lua ``Card:open`` (``G.pack_cards``,
+    ``G.GAME.pack_choices`` and ``G.GAME.PACK_INTERRUPT``).
+
+    Attributes:
+        key: The pack's key, such as ``p_arcana_normal_1``.
+        items: The jokers or consumables in the pack, left to right.
+        playing_cards: The playing cards in a Standard pack, left to right.
+        choices_left: How many more cards may be picked.
+        return_phase: The phase to go back to once the pack is closed.
+    """
+
+    key: str
+    items: list[Item]
+    playing_cards: list[PlayingCard]
+    choices_left: int
+    return_phase: Phase
+
+    @property
+    def size(self) -> int:
+        """How many cards are left in the pack."""
+        return len(self.items) + len(self.playing_cards)
+
+
+@dataclass(slots=True)
 class HandLevel:
     """The level and play counts of one poker hand (``G.GAME.hands[name]``)."""
 
@@ -257,6 +286,14 @@ class RunState:
     reroll_cost_increase: int
     free_rerolls: int
     shop_cards: list[Item]
+    #: Booster packs for sale this round (``G.GAME.current_round.used_packs``).
+    shop_boosters: list[Item]
+    #: Whether the first shop's free Buffoon pack has been offered.
+    first_shop_buffoon: bool
+    #: The booster pack being opened, while the phase is ``PACK_OPEN``.
+    pack: OpenPack | None
+    #: How much the next Ectoplasm reduces the hand size (``G.GAME.ecto_minus``).
+    ecto_minus: int
     # Consumable history.
     last_tarot_planet: str | None
     consumable_usage: dict[str, int]

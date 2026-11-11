@@ -12,12 +12,12 @@ from pathlib import Path
 import pytest
 
 from balatro_gym.sim import macros
-from balatro_gym.sim.actions import CashOut
+from balatro_gym.sim.actions import CashOut, UseConsumable
 from balatro_gym.sim.effects import JOKERS
 from balatro_gym.sim.events import CardDestroyed, EffectApplied, JokerDestroyed, MoneyChanged
 from balatro_gym.sim.items import new_item
 from balatro_gym.sim.state import HandType, Phase, PlayingCard, RunState
-from scenarios import play_hand, started_round
+from scenarios import play_hand, set_hand, started_round
 
 Setup = Callable[[RunState, list[PlayingCard]], None]
 
@@ -284,6 +284,39 @@ class TestJokers:
         ]
         assert applied[-2].via is not None
         assert applied[-1].via is None
+
+    def test_triboulet_multiplies_kings_and_queens(self) -> None:
+        assert score("KS KH", jokers=["j_triboulet"]) == (10 + 20) * 2 * 2 * 2
+        assert score("AS", jokers=["j_triboulet"]) == 16
+
+    def test_canio_grows_when_a_face_card_is_destroyed(self) -> None:
+        game = started_round("canio")
+        state = game.state
+        set_hand(state, "KS 2C 3D 4H 5S 6C 7D 8H")
+        canio = new_item(state, "j_caino")
+        state.jokers.append(canio)
+        state.consumables.append(new_item(state, "c_hanged_man"))
+        for action in macros.select_cards(state, [0, 1]):
+            game.step(action)
+        game.step(UseConsumable(0))
+        assert canio.values["caino_xmult"] == 2
+
+        def grown(state: RunState, cards: list[PlayingCard]) -> None:
+            state.jokers[0].values["caino_xmult"] = 3
+
+        assert score("AS", jokers=["j_caino"], setup=grown) == 16 * 3
+
+    def test_yorick_grows_every_23_discarded_cards(self) -> None:
+        game = started_round("yorick")
+        state = game.state
+        yorick = new_item(state, "j_yorick")
+        assert yorick.values["yorick_discards"] == 23
+        yorick.values["yorick_discards"] = 2
+        state.jokers.append(yorick)
+        for action in macros.discard_cards(state, [0, 1, 2]):
+            game.step(action)
+        assert yorick.values["x_mult"] == 2
+        assert yorick.values["yorick_discards"] == 22
 
 
 def test_every_registered_joker_has_a_scenario() -> None:

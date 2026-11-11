@@ -8,11 +8,12 @@ state first with ``serialize.clone`` to keep the original (ADR 0001).
 The game runs its effects through an animation queue. Here each action runs to
 completion synchronously, in the same order as the game's queued events.
 
-Implemented so far: the core loop with plain cards. A run starts at blind
-selection; a round is played with toggle, move, sort, play and discard; the round
-is evaluated and cashed out; the shop can be left; the boss of each ante is chosen
-by the game's rule (without its effect); and the run is won after the boss of
-ante 8, with the choice to continue in endless mode.
+Implemented so far: a run starts at blind selection; a round is played with
+toggle, move, sort, play and discard and scored with jokers and card modifiers;
+the round is evaluated and cashed out; the shop sells jokers, consumables and
+booster packs, which open into the pack phase; the boss of each ante is chosen by
+the game's rule (without its effect); and the run is won after the boss of ante 8,
+with the choice to continue in endless mode.
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ from .actions import (
     Action,
     Buy,
     BuyAndUse,
+    BuyPack,
     CashOut,
     ContinueEndless,
     Discard,
@@ -31,11 +33,13 @@ from .actions import (
     EndShop,
     MoveCard,
     MoveJoker,
+    Pick,
     Play,
     Reroll,
     SelectBlind,
     SellConsumable,
     SellJoker,
+    SkipPack,
     SortByRank,
     SortBySuit,
     ToggleCard,
@@ -53,7 +57,6 @@ from .events import (
     CardDestroyed,
     CardMoved,
     CardsDiscarded,
-    CardsDrawn,
     CardToggled,
     ConsumableUsed,
     Event,
@@ -62,14 +65,23 @@ from .events import (
     ItemCreated,
     ItemSold,
     JokerMoved,
+    PackPicked,
+    PackSkipped,
     RoundEnded,
     RunEnded,
     ShopRerolled,
 )
 from .hands import initial_hand_levels
-from .inventory import add_to_deck, calculate_reroll_cost, remove_from_deck
+from .inventory import (
+    add_playing_cards,
+    add_to_deck,
+    calculate_reroll_cost,
+    draw_cards,
+    remove_from_deck,
+)
 from .jokers import DOLLAR_BONUS
 from .modifiers import end_of_round_dollars, red_seal_repetitions
+from .packs import close_pack, fill_boosters, finish_pick, open_pack
 from .rng import Rng
 from .scope import Scope
 from .scoring import evaluate_play
@@ -217,6 +229,10 @@ def new_run(seed: str | int, config: RunConfig | None = None) -> RunState:
         reroll_cost_increase=0,
         free_rerolls=0,
         shop_cards=[],
+        shop_boosters=[],
+        first_shop_buffoon=False,
+        pack=None,
+        ecto_minus=1,
         last_tarot_planet=None,
         consumable_usage={},
         modifiers=modifiers,
@@ -253,16 +269,7 @@ def legal_actions(state: RunState) -> list[Action]:
             actions.append(Play())
         if selected >= 1 and state.discards_left > 0:
             actions.append(Discard())
-        for i, card in enumerate(state.hand):
-            if card.selected or selected < SELECTION_LIMIT:
-                actions.append(ToggleCard(i))
-        size = len(state.hand)
-        actions.extend(
-            MoveCard(source, target)
-            for source in range(size)
-            for target in range(size)
-            if source != target
-        )
+        _hand_actions(state, actions)
         if state.hand:
             actions.extend((SortByRank(), SortBySuit()))
     elif phase is Phase.ROUND_EVAL:
@@ -275,6 +282,17 @@ def legal_actions(state: RunState) -> list[Action]:
             for action in (Buy(i), BuyAndUse(i)):
                 if is_legal(state, action):
                     actions.append(action)
+        actions.extend(
+            BuyPack(i)
+            for i, pack in enumerate(state.shop_boosters)
+            if _affordable(state, pack.cost)
+        )
+    elif phase is Phase.PACK_OPEN:
+        assert state.pack is not None
+        actions.extend(Pick(i) for i in range(state.pack.size) if _can_pick(state, i))
+        # The game greys out Skip only while the pack's hand is being drawn.
+        actions.append(SkipPack())
+        _hand_actions(state, actions)
     elif phase is Phase.WIN:
         if state.config.endless:
             actions.append(ContinueEndless())
@@ -299,6 +317,21 @@ def legal_actions(state: RunState) -> list[Action]:
     return actions
 
 
+def _hand_actions(state: RunState, actions: list[Action]) -> None:
+    """Selecting and moving cards in hand, wherever the hand is shown."""
+    selected = _count_selected(state)
+    for i, card in enumerate(state.hand):
+        if card.selected or selected < SELECTION_LIMIT:
+            actions.append(ToggleCard(i))
+    size = len(state.hand)
+    actions.extend(
+        MoveCard(source, target)
+        for source in range(size)
+        for target in range(size)
+        if source != target
+    )
+
+
 def is_legal(state: RunState, action: Action) -> bool:
     """Whether ``action`` can be applied to ``state``."""
     check = _CHECKS.get(type(action))
@@ -313,8 +346,15 @@ def _is_move_legal(size: int, source: int, target: int) -> bool:
     return 0 <= source < size and 0 <= target < size and source != target
 
 
+def _hand_shown(state: RunState) -> bool:
+    """Whether the hand can be worked with: while playing, or in an Arcana or Spectral pack."""
+    return state.phase is Phase.SELECTING_HAND or (
+        state.phase is Phase.PACK_OPEN and bool(state.hand)
+    )
+
+
 def _check_toggle(state: RunState, action: ToggleCard) -> bool:
-    if state.phase is not Phase.SELECTING_HAND or not 0 <= action.index < len(state.hand):
+    if not _hand_shown(state) or not 0 <= action.index < len(state.hand):
         return False
     return state.hand[action.index].selected or _count_selected(state) < SELECTION_LIMIT
 
@@ -374,6 +414,33 @@ def _check_sell_joker(state: RunState, action: SellJoker) -> bool:
     )
 
 
+def _check_buy_pack(state: RunState, action: BuyPack) -> bool:
+    """Source: functions/button_callbacks.lua ``G.FUNCS.can_open``."""
+    return (
+        state.phase is Phase.SHOP
+        and 0 <= action.index < len(state.shop_boosters)
+        and _affordable(state, state.shop_boosters[action.index].cost)
+    )
+
+
+def _can_pick(state: RunState, index: int) -> bool:
+    """Whether the card at ``index`` in the open pack can be taken.
+
+    A consumable must be usable; a joker needs a free slot unless it is Negative.
+    Source: functions/button_callbacks.lua ``G.FUNCS.can_use_consumeable`` and
+    ``G.FUNCS.can_select_card``.
+    """
+    pack = state.pack
+    if pack is None or not 0 <= index < pack.size:
+        return False
+    if pack.playing_cards:
+        return True
+    item = pack.items[index]
+    if CENTERS[item.key].is_consumable:
+        return can_use(state, item, "pack")
+    return item.edition == "e_negative" or joker_room(state) > 0
+
+
 def _check_use(state: RunState, action: UseConsumable) -> bool:
     return (
         state.phase in _JOKER_MOVE_PHASES
@@ -386,8 +453,7 @@ _CHECKS: dict[type[Action], Callable[[RunState, Any], bool]] = {
     SelectBlind: lambda state, _: state.phase is Phase.BLIND_SELECT,
     ToggleCard: _check_toggle,
     MoveCard: lambda state, action: (
-        state.phase is Phase.SELECTING_HAND
-        and _is_move_legal(len(state.hand), action.source, action.target)
+        _hand_shown(state) and _is_move_legal(len(state.hand), action.source, action.target)
     ),
     SortByRank: lambda state, _: state.phase is Phase.SELECTING_HAND and bool(state.hand),
     SortBySuit: lambda state, _: state.phase is Phase.SELECTING_HAND and bool(state.hand),
@@ -399,6 +465,9 @@ _CHECKS: dict[type[Action], Callable[[RunState, Any], bool]] = {
     Buy: _check_buy,
     BuyAndUse: _check_buy_and_use,
     Reroll: _check_reroll,
+    BuyPack: _check_buy_pack,
+    Pick: lambda state, action: state.phase is Phase.PACK_OPEN and _can_pick(state, action.index),
+    SkipPack: lambda state, _: state.phase is Phase.PACK_OPEN,
     SellJoker: _check_sell_joker,
     SellConsumable: lambda state, action: (
         state.phase in _JOKER_MOVE_PHASES and 0 <= action.index < len(state.consumables)
@@ -547,12 +616,7 @@ def _draw_to_hand(scope: Scope) -> None:
     if state.hand_size <= 0 and not state.hand:
         _game_over(scope)
         return
-    count = min(len(state.deck), state.hand_size - len(state.hand))
-    drawn = [state.deck.pop() for _ in range(max(0, count))]
-    if drawn:
-        state.hand.extend(drawn)
-        _sort_hand(state)
-        scope.emit(CardsDrawn(tuple(card.uid for card in drawn)))
+    draw_cards(scope, state.hand_size - len(state.hand))
     if state.hands_played_this_round == 0 and state.discards_used_this_round == 0:
         for joker in list(state.jokers):
             calculate_joker(scope, joker, Context(ContextKind.FIRST_HAND_DRAWN))
@@ -781,7 +845,8 @@ def _cash_out(scope: Scope, _: CashOut) -> None:
     _reset_blinds(scope)
     scope.set_phase(Phase.SHOP)
     fill_shop(scope)
-    for item in state.shop_cards:
+    fill_boosters(scope)
+    for item in (*state.shop_cards, *state.shop_boosters):
         scope.emit(ItemCreated(item.uid, item.key, "shop"))
 
 
@@ -810,6 +875,7 @@ def _end_shop(scope: Scope, _: EndShop) -> None:
         calculate_joker(scope, joker, Context(ContextKind.ENDING_SHOP))
     scope.flush()
     state.shop_cards.clear()
+    state.shop_boosters.clear()
     done = (BlindStatus.DEFEATED, BlindStatus.SKIPPED)
     if state.blind_states[BlindSlot.SMALL] not in done:
         slot = BlindSlot.SMALL
@@ -887,6 +953,48 @@ def _use(scope: Scope, item: Item) -> None:
     scope.flush()
 
 
+def _buy_pack(scope: Scope, action: BuyPack) -> None:
+    """Source: functions/button_callbacks.lua ``G.FUNCS.use_card`` (a booster)."""
+    pack = scope.state.shop_boosters.pop(action.index)
+    scope.emit(ItemBought(pack.uid, pack.key, pack.cost))
+    open_pack(scope, pack, Phase.SHOP)
+
+
+def _pick(scope: Scope, action: Pick) -> None:
+    """Take a card from the open pack: use a consumable, or keep a joker or card.
+
+    Source: functions/button_callbacks.lua ``G.FUNCS.use_card``.
+    """
+    state = scope.state
+    pack = state.pack
+    assert pack is not None
+    if pack.playing_cards:
+        card = pack.playing_cards.pop(action.index)
+        scope.emit(PackPicked(card.uid, card.label))
+        state.deck.insert(0, card)
+        add_playing_cards(scope, [card], "deck")
+    else:
+        item = pack.items.pop(action.index)
+        scope.emit(PackPicked(item.uid, item.key))
+        if CENTERS[item.key].is_consumable:
+            _use(scope, item)
+        else:
+            add_to_deck(scope, item)
+            state.jokers.append(item)
+    scope.flush()
+    finish_pick(scope)
+
+
+def _skip_pack(scope: Scope, _: SkipPack) -> None:
+    """Source: functions/button_callbacks.lua ``G.FUNCS.skip_booster``."""
+    state = scope.state
+    for joker in list(state.jokers):
+        calculate_joker(scope, joker, Context(ContextKind.SKIPPING_BOOSTER))
+    scope.flush()
+    scope.emit(PackSkipped())
+    close_pack(scope)
+
+
 def _sell_joker(scope: Scope, action: SellJoker) -> None:
     _sell(scope, scope.state.jokers, action.index)
 
@@ -948,4 +1056,7 @@ _HANDLERS: dict[type[Action], Callable[[Scope, Any], None]] = {
     SellJoker: _sell_joker,
     SellConsumable: _sell_consumable,
     Reroll: _reroll,
+    BuyPack: _buy_pack,
+    Pick: _pick,
+    SkipPack: _skip_pack,
 }

@@ -31,7 +31,11 @@ from balatro_gym.sim.events import (
     JokerDestroyed,
     JokerMoved,
     MoneyChanged,
+    PackOpened,
+    PackPicked,
+    PackSkipped,
     PhaseChanged,
+    PlayingCardCreated,
     RoundEnded,
     RunEnded,
     ShopRerolled,
@@ -63,6 +67,15 @@ def render_state(state: RunState) -> str:
     if state.phase is Phase.SHOP:
         offers = " · ".join(f"{item.key} ${item.cost}" for item in state.shop_cards)
         lines.append(f"Shop    {offers or '(empty)'} · reroll ${state.reroll_cost}")
+        if state.shop_boosters:
+            packs = " · ".join(f"{item.key} ${item.cost}" for item in state.shop_boosters)
+            lines.append(f"Packs   {packs}")
+    if state.pack is not None:
+        contents = [item.key for item in state.pack.items]
+        contents += [_card(card) for card in state.pack.playing_cards]
+        lines.append(
+            f"Pack    {state.pack.key}: {' '.join(contents)} · {state.pack.choices_left} to choose"
+        )
     if state.phase is Phase.ROUND_EVAL:
         rows = " + ".join(f"{payout.source} ${payout.dollars}" for payout in state.payouts)
         lines.append(f"Cash out  {rows} = ${sum(payout.dollars for payout in state.payouts)}")
@@ -72,6 +85,9 @@ def render_state(state: RunState) -> str:
 def render_events(events: Iterable[Event], state: RunState) -> list[str]:
     """One line per notable event. ``state`` is used to name cards by their uid."""
     labels = {card.uid: card.label for card in state.playing_cards()}
+    if state.pack is not None:
+        labels.update((item.uid, item.key) for item in state.pack.items)
+        labels.update((card.uid, card.label) for card in state.pack.playing_cards)
     lines: list[str] = []
     for event in events:
         formatter = _FORMATTERS.get(type(event))
@@ -245,4 +261,8 @@ _FORMATTERS: dict[type[Event], Callable[[Any, dict[int, str]], str]] = {
         f"Used {event.key}" + (f" on {_names(event.targets, labels)}" if event.targets else "")
     ),
     ShopRerolled: lambda event, _: f"Rerolled the shop for ${event.cost}",
+    PackOpened: lambda event, labels: f"Opened {event.key}: {_names(event.cards, labels)}",
+    PackPicked: lambda event, _: f"Took {event.name} from the pack",
+    PackSkipped: lambda event, _: "Skipped the rest of the pack",
+    PlayingCardCreated: lambda event, _: f"Added {event.label} to the {event.area}",
 }

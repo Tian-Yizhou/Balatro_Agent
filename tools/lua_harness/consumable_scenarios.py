@@ -12,7 +12,7 @@ from typing import Any
 
 from scoring_scenarios import EDITIONS, HANDS, _random_card
 
-__all__ = ["random_consumable_scenarios", "random_shop_scenarios"]
+__all__ = ["random_consumable_scenarios", "random_pack_scenarios", "random_shop_scenarios"]
 
 
 def random_consumable_scenarios(
@@ -45,7 +45,7 @@ def random_consumable_scenarios(
             "levels": {hand: randomizer.randint(1, 3) for hand in randomizer.sample(HANDS, 2)},
             "dollars": randomizer.randint(0, 40),
             "probability": randomizer.choice((0, 1000)),
-            "phase": randomizer.choice(("selecting_hand", "selecting_hand", "shop")),
+            "phase": randomizer.choice(("selecting_hand", "selecting_hand", "shop", "pack_open")),
         }
 
 
@@ -83,4 +83,31 @@ def random_shop_scenarios(
             "sell": randomizer.randrange(len(jokers))
             if jokers and randomizer.random() < 0.8
             else None,
+        }
+
+
+def random_pack_scenarios(
+    seed: int, count: int, pack_keys: Sequence[str], joker_keys: Sequence[str]
+) -> Iterator[dict[str, Any]]:
+    """Yield ``count`` random booster pack openings in the shop (see ``rules.open_pack``)."""
+    randomizer = random.Random(seed)
+    for number in range(count):
+        uid = iter(range(1, 400))
+        jokers = []
+        for key in randomizer.sample(list(joker_keys), randomizer.choice((0, 2, 5, 5))):
+            joker: dict[str, Any] = {"key": key}
+            if randomizer.random() < 0.2:
+                joker["edition"] = "e_negative"
+            jokers.append(joker)
+        yield {
+            "pack": pack_keys[number % len(pack_keys)],
+            "seed": f"pack{seed}-{number}",
+            "ante": randomizer.randint(1, 8),
+            # Enough to buy any pack.
+            "dollars": randomizer.randint(8, 30),
+            "jokers": jokers,
+            "held": [
+                _random_card(randomizer, next(uid), False, ("Red", "Gold", "Blue", "Purple"))
+                for _ in range(8)
+            ],
         }
