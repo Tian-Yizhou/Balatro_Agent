@@ -231,9 +231,10 @@ class LuaGame:
             "top": None if text == "NULL" else text,
             "display": "" if display == "NULL" else display,
             "scoring": _to_list(scoring),
+            # Lua's table order changes between runs; sort for stable vectors.
             "groups": {
                 name: [_to_list(group) for group in _values(value)]
-                for name, value in groups.items()
+                for name, value in sorted(groups.items())
                 if len(value) > 0
             },
         }

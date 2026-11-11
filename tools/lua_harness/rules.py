@@ -192,7 +192,7 @@ def _flatten_ability(ability: Any) -> dict[str, Any]:
     values: dict[str, Any] = {"mult": ability.mult, "x_mult": ability.x_mult}
     extra = ability.extra
     if hasattr(extra, "items"):
-        for key, value in extra.items():
+        for key, value in sorted(extra.items()):
             values[f"extra.{key}"] = value
     elif extra is not None:
         values["extra"] = extra
@@ -314,7 +314,7 @@ def end_of_round(rules: LuaRules, scenario: dict[str, Any]) -> dict[str, Any]:
             if item.ID in remaining
         },
         "consumables": [item.config.center.key for item in rules.area("consumeables")],
-        "pool_flags": {key: bool(value) for key, value in game.pool_flags.items()},
+        "pool_flags": {key: bool(value) for key, value in sorted(game.pool_flags.items())},
     }
 
 
