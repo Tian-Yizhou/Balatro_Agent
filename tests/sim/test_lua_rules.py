@@ -27,11 +27,15 @@ from scenarios import (
     compare_open_pack,
     compare_results,
     compare_shop,
+    compare_shop_playing_cards,
     engine_discard,
     engine_end_of_round,
     engine_open_pack,
+    engine_redeem_voucher,
+    engine_reroll_boss,
     engine_score,
     engine_shop,
+    engine_shop_playing_cards,
     engine_use_consumable,
 )
 
@@ -87,6 +91,7 @@ VERIFIED_JOKERS = sorted(key for key in JOKERS if key != "j_misprint")
 VERIFIED_SEALS = ("Red", "Gold", "Blue", "Purple")
 IMPLEMENTED = set(JOKERS) | set(CONSUMABLES)
 PACKS = [center.key for center in pool("Booster")]
+REQUIRES = {center.key: list(center.raw.get("requires", ())) for center in pool("Voucher")}
 
 
 @pytest.fixture(scope="module")
@@ -161,7 +166,7 @@ def test_packs_match_original_game_vectors() -> None:
     for number, case in enumerate(cases):
         expected = case["expected"]
         ours = engine_open_pack(case["scenario"], expected["cards"])
-        problems = compare_open_pack(ours, expected)
+        problems = compare_open_pack(case["scenario"], ours, expected)
         if problems:
             mismatches.append((number, problems))
     assert mismatches == []
@@ -176,7 +181,7 @@ def test_random_pack_openings_match(lua: Any) -> None:
         scenarios.random_pack_scenarios(1, 640, PACKS, VERIFIED_JOKERS)
     ):
         game = open_in_game(lua, scenario)
-        problems = compare_open_pack(engine_open_pack(scenario, game["cards"]), game)
+        problems = compare_open_pack(scenario, engine_open_pack(scenario, game["cards"]), game)
         if problems:
             mismatches.append((number, problems))
     assert mismatches == []
@@ -237,3 +242,95 @@ def test_misprint_range_matches(lua: Any) -> None:
         in_engine.add(int(engine_score(case)["score"]) // 16 - 1)
     assert in_game == set(range(24))
     assert in_engine == set(range(24))
+
+
+def _redeem_scenarios(seed: int, count: int) -> Any:
+    return _load("voucher_scenarios").random_redeem_scenarios(
+        seed, count, REQUIRES, sorted(JOKERS), sorted(CONSUMABLES), PACKS
+    )
+
+
+def _differences(ours: dict[str, Any], game: dict[str, Any]) -> list[str]:
+    return [
+        f"{field} {ours.get(field)} vs {game.get(field)}"
+        for field in sorted({*ours, *game})
+        if ours.get(field) != game.get(field)
+    ]
+
+
+def test_vouchers_match_original_game_vectors() -> None:
+    cases = _vectors()["voucher"]
+    assert {case["scenario"]["voucher"] for case in cases} == set(REQUIRES)
+    redeemed = [case for case in cases if case["expected"]["redeemable"]]
+    assert {case["scenario"]["voucher"] for case in redeemed} == set(REQUIRES)
+    mismatches = []
+    for number, case in enumerate(cases):
+        problems = _differences(engine_redeem_voucher(case["scenario"]), case["expected"])
+        if problems:
+            mismatches.append((number, problems))
+    assert mismatches == []
+
+
+def test_boss_rerolls_match_original_game_vectors() -> None:
+    cases = _vectors()["boss_reroll"]
+    assert sum(case["expected"]["allowed"] for case in cases) >= 10
+    mismatches = []
+    for number, case in enumerate(cases):
+        expected = case["expected"]
+        problems = _differences(engine_reroll_boss(case["scenario"], expected), expected)
+        if problems:
+            mismatches.append((number, problems))
+    assert mismatches == []
+
+
+def test_shop_playing_cards_match_original_game_vectors() -> None:
+    cases = _vectors()["shop_playing_cards"]
+    assert any("bought" in case["expected"] for case in cases)
+    mismatches = []
+    for number, case in enumerate(cases):
+        scenario, expected = case["scenario"], case["expected"]
+        ours = engine_shop_playing_cards(scenario, expected)
+        problems = compare_shop_playing_cards(scenario, ours, expected)
+        if problems:
+            mismatches.append((number, problems))
+    assert mismatches == []
+
+
+@live
+def test_random_voucher_redemptions_match(lua: Any) -> None:
+    redeem_in_game = _load("rules").redeem_voucher
+    mismatches = []
+    for number, scenario in enumerate(_redeem_scenarios(1, 960)):
+        problems = _differences(engine_redeem_voucher(scenario), redeem_in_game(lua, scenario))
+        if problems:
+            mismatches.append((number, problems))
+    assert mismatches == []
+
+
+@live
+def test_random_boss_rerolls_match(lua: Any) -> None:
+    scenarios = _load("voucher_scenarios")
+    reroll_in_game = _load("rules").reroll_boss
+    mismatches = []
+    for number, scenario in enumerate(scenarios.random_boss_reroll_scenarios(1, 400)):
+        game = reroll_in_game(lua, scenario)
+        problems = _differences(engine_reroll_boss(scenario, game), game)
+        if problems:
+            mismatches.append((number, problems))
+    assert mismatches == []
+
+
+@live
+def test_random_shop_playing_cards_match(lua: Any) -> None:
+    scenarios = _load("voucher_scenarios")
+    fill_in_game = _load("rules").shop_playing_cards
+    mismatches = []
+    for number, scenario in enumerate(
+        scenarios.random_shop_playing_card_scenarios(1, 60, VERIFIED_JOKERS)
+    ):
+        game = fill_in_game(lua, scenario)
+        ours = engine_shop_playing_cards(scenario, game)
+        problems = compare_shop_playing_cards(scenario, ours, game)
+        if problems:
+            mismatches.append((number, problems))
+    assert mismatches == []

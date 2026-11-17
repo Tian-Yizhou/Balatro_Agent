@@ -60,3 +60,4 @@ The decisions taken while planning v2 are recorded in
 | [0002](0002-lua-harness-with-lupa.md) | Lua differential tests run on lupa, with committed test vectors |
 | [0003](0003-unimplemented-items-unavailable.md) | Items without an implemented effect are unavailable |
 | [0004](0004-reroll-boss-action.md) | Rerolling the boss blind is an action |
+| [0005](0005-shop-playing-cards-as-items.md) | A playing card for sale is an item that holds the card |

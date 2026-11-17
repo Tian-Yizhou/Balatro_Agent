@@ -18,6 +18,7 @@ __all__ = [
     "AnteChanged",
     "BlindSelected",
     "BossChosen",
+    "BossRerolled",
     "CardDestroyed",
     "CardMoved",
     "CardRetriggered",
@@ -45,6 +46,7 @@ __all__ = [
     "RoundEnded",
     "RunEnded",
     "ShopRerolled",
+    "VoucherRedeemed",
     "event_to_data",
 ]
 
@@ -245,7 +247,8 @@ class ItemSold(Event):
 
 @dataclass(frozen=True, slots=True)
 class ItemCreated(Event):
-    """A joker or consumable appeared: in the shop or among the player's items."""
+    """An item appeared: in the shop (any card, voucher or pack) or among the
+    player's jokers and consumables."""
 
     kind: ClassVar[str] = "item_created"
     uid: int
@@ -304,12 +307,30 @@ class ShopRerolled(Event):
     cost: int
 
 
+@dataclass(frozen=True, slots=True)
+class VoucherRedeemed(Event):
+    kind: ClassVar[str] = "voucher_redeemed"
+    uid: int
+    key: str
+    cost: int
+
+
+@dataclass(frozen=True, slots=True)
+class BossRerolled(Event):
+    """The ante's boss blind was replaced by ``boss`` for ``cost`` dollars."""
+
+    kind: ClassVar[str] = "boss_rerolled"
+    boss: str
+    cost: int
+
+
 #: Every concrete event type, by ``kind``.
 EVENT_TYPES: dict[str, type[Event]] = {
     cls.kind: cls
     for cls in (
         PhaseChanged,
         BossChosen,
+        BossRerolled,
         BlindSelected,
         CardsDrawn,
         CardToggled,
@@ -337,6 +358,7 @@ EVENT_TYPES: dict[str, type[Event]] = {
         PackOpened,
         PackPicked,
         PackSkipped,
+        VoucherRedeemed,
     )
 }
 

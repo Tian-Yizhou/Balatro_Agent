@@ -110,4 +110,11 @@ def random_pack_scenarios(
                 _random_card(randomizer, next(uid), False, ("Red", "Gold", "Blue", "Purple"))
                 for _ in range(8)
             ],
+            "vouchers": [
+                key for key in ("v_omen_globe", "v_telescope") if randomizer.random() < 0.4
+            ],
+            "played_hands": {
+                hand: randomizer.randint(1, 3)
+                for hand in randomizer.sample(HANDS, randomizer.randint(0, 3))
+            },
         }

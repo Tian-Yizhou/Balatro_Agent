@@ -16,7 +16,7 @@ for _, name in ipairs({
   "inc_career_stat", "set_hand_usage", "play_area_status_text", "highlight_card",
   "discover_card", "unlock_card", "save_run", "stop_use", "set_joker_usage",
   "ease_background_colour_blind", "set_consumeable_usage_profile",
-  "alert_no_space", "draw_card",
+  "alert_no_space", "draw_card", "set_voucher_usage",
 }) do _G[name] = harness.noop end
 
 -- Cash-out rows are recorded so tests can read the payout.
@@ -101,6 +101,7 @@ G.CARD_W, G.CARD_H = 1, 1.4
 G.I = {CARD = {}}
 G.ARGS = {}
 G.STAGE = G.STAGES.RUN
+G.SPEEDFACTOR = 1
 
 -- A blind with no effect, as the plain blinds have.
 harness.blind = {}
@@ -179,6 +180,9 @@ function harness_new_game(setup)
   G.GAME.current_round.hands_played = setup.hands_played or 0
   G.GAME.current_round.discards_used = setup.discards_used or 0
   G.GAME.round_resets.ante = setup.ante or 1
+  -- The poker hands in the game's order (globals.lua builds this list).
+  G.handlist = {}
+  for name, hand in pairs(G.GAME.hands) do G.handlist[hand.order] = name end
   for name, level in pairs(setup.levels or {}) do
     local hand = G.GAME.hands[name]
     hand.level = level
@@ -257,6 +261,10 @@ getmetatable(harness.anything).__newindex = function() end
 getmetatable(harness.anything).__index = function() return harness.anything end
 getmetatable(harness.anything).__call = function() return harness.anything end
 G.HUD, G.HUD_blind = harness.anything, harness.anything
+-- Interface boxes and animated text, such as a redeemed voucher's banner.
+G.UIT = harness.anything
+function UIBox() return harness.anything end
+function DynaText() return harness.anything end
 -- The room's size is read when a booster pack's cards are laid out.
 G.ROOM = setmetatable({T = {x = 0, y = 0, w = 20, h = 11.5}},
   {__index = function() return harness.anything end})

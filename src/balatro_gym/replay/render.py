@@ -13,6 +13,7 @@ from balatro_gym.sim.events import (
     AnteChanged,
     BlindSelected,
     BossChosen,
+    BossRerolled,
     CardDestroyed,
     CardMoved,
     CardRetriggered,
@@ -39,8 +40,9 @@ from balatro_gym.sim.events import (
     RoundEnded,
     RunEnded,
     ShopRerolled,
+    VoucherRedeemed,
 )
-from balatro_gym.sim.state import BlindSlot, BlindStatus, HandSort, PlayingCard
+from balatro_gym.sim.state import BlindSlot, BlindStatus, HandSort, Item, PlayingCard
 
 from .format import Replay, Step
 
@@ -64,9 +66,14 @@ def render_state(state: RunState) -> str:
         lines.append("Jokers  " + " ".join(joker.key for joker in state.jokers))
     if state.consumables:
         lines.append("Items   " + " ".join(item.key for item in state.consumables))
+    if state.used_vouchers:
+        lines.append("Owned   " + " ".join(state.used_vouchers))
     if state.phase is Phase.SHOP:
-        offers = " · ".join(f"{item.key} ${item.cost}" for item in state.shop_cards)
+        offers = " · ".join(f"{_offer(item)} ${item.cost}" for item in state.shop_cards)
         lines.append(f"Shop    {offers or '(empty)'} · reroll ${state.reroll_cost}")
+        if state.shop_vouchers:
+            vouchers = " · ".join(f"{item.key} ${item.cost}" for item in state.shop_vouchers)
+            lines.append(f"Voucher {vouchers}")
         if state.shop_boosters:
             packs = " · ".join(f"{item.key} ${item.cost}" for item in state.shop_boosters)
             lines.append(f"Packs   {packs}")
@@ -85,6 +92,7 @@ def render_state(state: RunState) -> str:
 def render_events(events: Iterable[Event], state: RunState) -> list[str]:
     """One line per notable event. ``state`` is used to name cards by their uid."""
     labels = {card.uid: card.label for card in state.playing_cards()}
+    labels.update((item.uid, _offer(item)) for item in state.shop_cards if item.playing_card)
     if state.pack is not None:
         labels.update((item.uid, item.key) for item in state.pack.items)
         labels.update((card.uid, card.label) for card in state.pack.playing_cards)
@@ -155,6 +163,15 @@ def _blind_choice(state: RunState, slot: BlindSlot) -> str:
     return f"{marker}{name} ({status.value.lower()})"
 
 
+def _offer(item: Item) -> str:
+    """A shop card: its key, or a playing card's label and modifiers."""
+    card = item.playing_card
+    if card is None:
+        return item.key
+    modifiers = [name for name in (card.enhancement, card.edition) if name]
+    return f"{card.label} ({', '.join(modifiers)})" if modifiers else card.label
+
+
 def _card(card: PlayingCard) -> str:
     text = card.label
     if card.debuffed:
@@ -216,6 +233,9 @@ def _hand_scored(event: HandScored, labels: dict[int, str]) -> str:
 
 _FORMATTERS: dict[type[Event], Callable[[Any, dict[int, str]], str]] = {
     BossChosen: lambda event, _: f"Boss for ante {event.ante}: {BLINDS[event.boss].name}",
+    BossRerolled: lambda event, _: (
+        f"Rerolled the boss for ${event.cost}: {BLINDS[event.boss].name}"
+    ),
     BlindSelected: lambda event, _: (
         f"Selected the {BLINDS[event.blind].name}: score {_number(event.target)} to win"
     ),
@@ -254,9 +274,14 @@ _FORMATTERS: dict[type[Event], Callable[[Any, dict[int, str]], str]] = {
         f"Run over ({event.reason.replace('_', ' ')}): {'won' if event.won else 'not won'}"
         f" at ante {event.ante}, round {event.round}"
     ),
-    ItemBought: lambda event, _: f"Bought {event.key} for ${event.cost}",
+    ItemBought: lambda event, labels: (
+        f"Bought {labels.get(event.uid, event.key)} for ${event.cost}"
+    ),
     ItemSold: lambda event, _: f"Sold {event.key} for ${event.value}",
-    ItemCreated: lambda event, _: f"{event.key} appeared in {event.area}",
+    ItemCreated: lambda event, labels: (
+        f"{labels.get(event.uid, event.key)} appeared in {event.area}"
+    ),
+    VoucherRedeemed: lambda event, _: f"Redeemed {event.key} for ${event.cost}",
     ConsumableUsed: lambda event, labels: (
         f"Used {event.key}" + (f" on {_names(event.targets, labels)}" if event.targets else "")
     ),

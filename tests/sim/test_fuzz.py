@@ -18,17 +18,22 @@ from balatro_gym.sim.actions import (
     MoveCard,
     MoveJoker,
     Pick,
+    RedeemVoucher,
     SellConsumable,
     SellJoker,
     ToggleCard,
     UseConsumable,
 )
 from balatro_gym.sim.consumables import IMPLEMENTED as CONSUMABLES
+from balatro_gym.sim.content import CENTERS
 from balatro_gym.sim.effects import JOKERS
 from balatro_gym.sim.engine import SELECTION_LIMIT
 from balatro_gym.sim.events import CardDestroyed, PlayingCardCreated
 from balatro_gym.sim.items import new_item
+from balatro_gym.sim.scope import Scope
 from balatro_gym.sim.state import RunState
+from balatro_gym.sim.vouchers import IMPLEMENTED as VOUCHERS
+from balatro_gym.sim.vouchers import apply_to_run
 from scenarios import Policy, greedy_policy, play_game, random_policy
 
 
@@ -48,6 +53,7 @@ def candidate_actions(state: RunState) -> list[Action]:
     candidates += [SellJoker(i) for i in jokers]
     candidates += [cls(i) for cls in (SellConsumable, UseConsumable) for i in consumables]
     candidates += [BuyPack(i) for i in range(-1, len(state.shop_boosters) + 1)]
+    candidates += [RedeemVoucher(i) for i in range(-1, len(state.shop_vouchers) + 1)]
     pack_size = state.pack.size if state.pack is not None else 0
     candidates += [Pick(i) for i in range(-1, pack_size + 1)]
     return candidates
@@ -69,8 +75,14 @@ def check_invariants(game: Game, uids: set[int]) -> None:
 
 
 def equip(game: Game, randomizer: random.Random) -> None:
-    """Give the player random implemented jokers, consumables and card modifiers."""
+    """Give the player random implemented jokers, consumables, vouchers and card
+    modifiers."""
     state = game.state
+    for key in randomizer.sample(sorted(VOUCHERS), 8):
+        for voucher in (*CENTERS[key].raw.get("requires", ()), key):
+            if voucher not in state.used_vouchers:
+                state.used_vouchers.append(voucher)
+                apply_to_run(Scope(state), voucher)
     state.consumables = [new_item(state, key) for key in randomizer.sample(sorted(CONSUMABLES), 2)]
     for key in randomizer.sample(sorted(JOKERS), 5):
         joker = new_item(state, key)

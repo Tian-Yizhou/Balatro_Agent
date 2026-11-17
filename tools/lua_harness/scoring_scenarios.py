@@ -30,6 +30,18 @@ HANDS = (
     "Four of a Kind",
     "Straight Flush",
 )
+#: The Planet card of each hand in ``HANDS``, in the same order.
+PLANETS = (
+    "c_pluto",
+    "c_mercury",
+    "c_uranus",
+    "c_venus",
+    "c_saturn",
+    "c_jupiter",
+    "c_earth",
+    "c_mars",
+    "c_neptune",
+)
 
 #: Joker values worth randomizing, with the range to draw from.
 VALUE_RANGES: dict[str, dict[str, tuple[float, float]]] = {
@@ -81,6 +93,9 @@ def random_scoring_scenarios(
             "discards_left": randomizer.randint(0, 3),
             "probability": randomizer.choice((0, 1000)),
             "tarots_used": randomizer.choice((0, 0, 1, 4)),
+            # Planet cards held score with Observatory.
+            "consumables": randomizer.sample(PLANETS, randomizer.choice((0, 0, 1, 2))),
+            "vouchers": ["v_observatory"] if randomizer.random() < 0.5 else [],
         }
 
 

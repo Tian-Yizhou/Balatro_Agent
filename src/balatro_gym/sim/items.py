@@ -100,9 +100,14 @@ def copy_playing_card(state: RunState, card: PlayingCard) -> PlayingCard:
 
 
 def set_cost(state: RunState, item: Item) -> None:
-    """Set an item's buying price and selling value from the run's economy."""
-    extra = state.inflation + EDITION_COST.get(item.edition or "", 0)
-    base = CENTERS[item.key].cost
+    """Set an item's buying price and selling value from the run's economy.
+
+    A playing card for sale has no price of its own in the game's data and costs
+    $1 before its edition.
+    """
+    edition = item.playing_card.edition if item.playing_card is not None else item.edition
+    extra = state.inflation + EDITION_COST.get(edition or "", 0)
+    base = int(CENTERS[item.key].raw.get("cost", 1))
     item.cost = max(1, math.floor((base + extra + 0.5) * (100 - state.discount_percent) / 100))
     if item.rental:
         item.cost = 1

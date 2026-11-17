@@ -1,7 +1,8 @@
 """Creating cards: item pools, the shop, and rolled editions and stickers.
 
-Source: functions/common_events.lua ``get_current_pool``, ``poll_edition`` and
-``create_card``; functions/UI_definitions.lua ``create_card_for_shop``.
+Source: functions/common_events.lua ``get_current_pool``, ``poll_edition``,
+``create_card`` and ``get_next_voucher_key``; functions/UI_definitions.lua
+``create_card_for_shop``.
 """
 
 from __future__ import annotations
@@ -11,15 +12,17 @@ from typing import Literal
 
 from .content import CENTERS, Center, pool
 from .effects import JOKERS, find_joker
-from .items import initial_values, set_cost
+from .items import initial_values, new_playing_card, set_cost
 from .scope import Scope
-from .state import HandType, Item, RunState
+from .state import HandType, Item, PlayingCard, RunState, Suit
 
 __all__ = [
     "Area",
     "create_card",
     "create_card_for_shop",
+    "create_playing_card",
     "fill_shop",
+    "get_next_voucher_key",
     "is_available",
     "poll_edition",
     "register_consumables",
@@ -33,8 +36,12 @@ _FALLBACK = {
     "Tarot_Planet": "c_strength",
     "Planet": "c_pluto",
     "Spectral": "c_incantation",
+    "Voucher": "v_blank",
 }
 _FALLBACK_DEFAULT = "j_joker"
+
+# Every rank and suit, for a random playing card's front (``G.P_CARDS``).
+_FRONTS = tuple((rank, suit) for suit in Suit for rank in range(2, 15))
 
 _consumables: Callable[[str], bool] = lambda key: False  # noqa: E731
 
@@ -50,8 +57,12 @@ def is_available(state: RunState, center: Center) -> bool:
 
     Items the player already has (or that are in the shop) are unavailable unless
     they own Showman, as are items without an implemented effect (ADR 0003).
+    A voucher is available until it is redeemed, once the vouchers it upgrades
+    have been redeemed; every voucher is implemented.
     """
     key = center.key
+    if center.set == "Voucher":
+        return _voucher_available(state, center)
     implemented = key in JOKERS if center.is_joker else _consumables(key)
     if not implemented:
         return False
@@ -72,6 +83,15 @@ def is_available(state: RunState, center: Center) -> bool:
         return False
     yes_flag = center.raw.get("yes_pool_flag")
     return not (yes_flag and not state.pool_flags.get(str(yes_flag)))
+
+
+def _voucher_available(state: RunState, center: Center) -> bool:
+    if center.key in state.used_vouchers:
+        return False
+    if any(required not in state.used_vouchers for required in center.raw.get("requires", ())):
+        return False
+    # Showman doesn't bring back a voucher that is already for sale.
+    return all(item.key != center.key for item in state.shop_vouchers)
 
 
 def _used_keys(state: RunState) -> set[str]:
@@ -170,7 +190,13 @@ def _draw_from_pool(
     else:
         members = _set_pool(set_name)
         pool_key = f"{set_name}{key_append}{ante}"
-    entries = [center.key if is_available(state, center) else None for center in members]
+    return _choose(scope, set_name, members, pool_key)
+
+
+def _choose(scope: Scope, set_name: str, members: tuple[Center, ...], pool_key: str) -> str:
+    """Pick an available member on stream ``pool_key``, resampling past the
+    unavailable ones."""
+    entries = [center.key if is_available(scope.state, center) else None for center in members]
     if not any(entries):
         return _FALLBACK.get(set_name, _FALLBACK_DEFAULT)
     choice = scope.rng.choice(pool_key, entries)
@@ -204,24 +230,71 @@ def _roll_stickers(scope: Scope, item: Item, area: Area) -> None:
             item.rental = True
 
 
+def create_playing_card(scope: Scope, set_name: str, key_append: str) -> PlayingCard:
+    """A random playing card: plain for the ``Base`` set, or with a random
+    enhancement for the ``Enhanced`` set. It has no edition or seal yet.
+
+    Source: functions/common_events.lua ``create_card`` (the ``front``).
+    """
+    ante = scope.state.ante
+    enhancement = None
+    if set_name == "Enhanced":
+        enhancements = [center.key for center in pool("Enhanced")]
+        enhancement = scope.rng.choice(f"Enhanced{key_append}{ante}", enhancements)
+    rank, suit = scope.rng.choice(f"front{key_append}{ante}", _FRONTS)
+    return new_playing_card(scope.state, rank, suit, enhancement)
+
+
 def create_card_for_shop(scope: Scope) -> Item:
-    """Roll a card type by the shop's rates, then create a card of that type."""
+    """Roll a card type by the shop's rates, then create a card of that type.
+
+    With Illusion, a playing card may be enhanced and may get an edition.
+    """
     state = scope.state
+    illusion = "v_illusion" in state.used_vouchers
+    total = (
+        state.joker_rate
+        + state.tarot_rate
+        + state.planet_rate
+        + state.playing_card_rate
+        + state.spectral_rate
+    )
+    polled = scope.rng.random(f"cdt{state.ante}") * total
+    # The game builds this list on every call, rolling Illusion's chance each time.
+    playing_set = "Enhanced" if illusion and scope.rng.random("illusion") > 0.6 else "Base"
     rates = (
         ("Joker", state.joker_rate),
         ("Tarot", state.tarot_rate),
         ("Planet", state.planet_rate),
-        ("Base", state.playing_card_rate),
+        (playing_set, state.playing_card_rate),
         ("Spectral", state.spectral_rate),
     )
-    total = sum(rate for _, rate in rates)
-    polled = scope.rng.random(f"cdt{state.ante}") * total
     checked = 0.0
     for set_name, rate in rates:
         if checked < polled <= checked + rate:
+            if set_name in ("Base", "Enhanced"):
+                return _shop_playing_card(scope, set_name, illusion)
             return create_card(scope, set_name, "shop", key_append="sho")
         checked += rate
     return create_card(scope, "Joker", "shop", key_append="sho")
+
+
+def _shop_playing_card(scope: Scope, set_name: str, illusion: bool) -> Item:
+    card = create_playing_card(scope, set_name, "sho")
+    if illusion and scope.rng.random("illusion") > 0.8:
+        roll = scope.rng.random("illusion")
+        card.edition = "e_polychrome" if roll > 0.85 else "e_holo" if roll > 0.5 else "e_foil"
+    item = Item(uid=card.uid, key=card.enhancement or "c_base", playing_card=card)
+    set_cost(scope.state, item)
+    return item
+
+
+def get_next_voucher_key(scope: Scope, *, from_tag: bool = False) -> str:
+    """Draw the next voucher to offer. Source: functions/common_events.lua
+    ``get_next_voucher_key``."""
+    # A Voucher Tag's draw has its own stream, the same in every ante.
+    pool_key = "Voucher_fromtag" if from_tag else f"Voucher{scope.state.ante}"
+    return _choose(scope, "Voucher", pool("Voucher"), pool_key)
 
 
 def fill_shop(scope: Scope) -> None:

@@ -16,8 +16,11 @@ __all__ = [
     "discard",
     "end_of_round",
     "open_pack",
+    "redeem_voucher",
+    "reroll_boss",
     "score",
     "shop",
+    "shop_playing_cards",
     "use_consumable",
 ]
 
@@ -271,6 +274,10 @@ def score(rules: LuaRules, scenario: dict[str, Any]) -> dict[str, Any]:
         _apply_values(item, joker.get("values", {}))
         jokers.append(item)
         rules.add("jokers", item)
+    for position, key in enumerate(scenario.get("consumables", [])):
+        rules.add("consumeables", rules.item(600 + position, key))
+    for key in scenario.get("vouchers", []):
+        rules.game.used_vouchers[key] = True
     rules.globals.G.FUNCS.evaluate_play()
     rules.run_events()
     return {
@@ -613,6 +620,10 @@ def open_pack(rules: LuaRules, scenario: dict[str, Any]) -> dict[str, Any]:
     for position, joker in enumerate(scenario["jokers"]):
         item = rules.item(100 + position, joker["key"], edition=joker.get("edition"))
         rules.add("jokers", item)
+    for key in scenario.get("vouchers", []):
+        game.GAME.used_vouchers[key] = True
+    for name, played in scenario.get("played_hands", {}).items():
+        game.GAME.hands[name].played = played
     pack = rules.item(900, scenario["pack"])
     pack.open(pack)
     rules.run_events()
@@ -652,3 +663,248 @@ def _describe_pack_card(card: Any) -> dict[str, Any]:
         "key": str(card.config.center.key),
         "edition": f"e_{edition}" if edition else None,
     }
+
+
+def _registered(rules: LuaRules, card: Any) -> Any:
+    """Register ``card`` with the game's list of all cards (``G.I.CARD``), which
+    discounts re-price."""
+    cards = rules.globals.G.I.CARD
+    cards[len(cards) + 1] = card
+    return card
+
+
+def _run_numbers(rules: LuaRules) -> dict[str, Any]:
+    """The run's numbers that vouchers change. Slot counts leave out the slots
+    Negative cards bring."""
+    globals_ = rules.globals
+    game = globals_.G.GAME
+
+    def slots(area: Any) -> int:
+        negatives = sum(
+            bool(card.edition and card.edition.negative) for card in area.cards.values()
+        )
+        return int(area.config.card_limit) - negatives
+
+    return {
+        "ante": int(game.round_resets.ante),
+        "hands_per_round": int(game.round_resets.hands),
+        "hands_left": int(game.current_round.hands_left),
+        "discards_per_round": int(game.round_resets.discards),
+        "discards_left": int(game.current_round.discards_left),
+        "hand_size": int(globals_.G.hand.config.card_limit),
+        "joker_slots": slots(globals_.G.jokers),
+        "consumable_slots": slots(globals_.G.consumeables),
+        "rates": [
+            float(game.joker_rate),
+            float(game.tarot_rate),
+            float(game.planet_rate),
+            float(game.playing_card_rate),
+            float(game.spectral_rate or 0),
+            float(game.edition_rate),
+        ],
+        "interest_cap": int(game.interest_cap),
+        "discount_percent": int(game.discount_percent),
+        "base_reroll_cost": int(game.round_resets.reroll_cost),
+        "reroll_cost": int(game.current_round.reroll_cost),
+        "shop_slots": int(game.shop.joker_max),
+        "shop_cards": len(rules.area("shop_jokers")),
+    }
+
+
+def redeem_voucher(rules: LuaRules, scenario: dict[str, Any]) -> dict[str, Any]:
+    """Redeem a voucher in the shop with the game's own ``Card:redeem``.
+
+    The scenario gives the vouchers already redeemed, the voucher for sale, the
+    jokers and consumables owned, the shop's cards and pack, and the run's
+    numbers. Returns whether the game lets the voucher be redeemed and, if so,
+    the run's numbers, money and prices afterwards, and the vouchers the shop
+    could offer next.
+    """
+    rules.new_game(
+        dollars=scenario["dollars"],
+        probability=1,
+        hands_left=scenario["hands_left"],
+        discards_left=scenario["discards_left"],
+        ante=scenario["ante"],
+    )
+    globals_ = rules.globals
+    rules.lua.execute("for _, center in pairs(G.P_CENTERS) do center.unlocked = true end")
+    game = globals_.G.GAME
+    globals_.G.STATE = globals_.G.STATES.SHOP
+    globals_.G.shop = globals_.harness.anything
+    game.round_resets.hands = 4
+    game.round_resets.discards = 3
+    game.round_resets.reroll_cost = 5
+    game.current_round.reroll_cost_increase = scenario["reroll_increase"]
+    game.current_round.reroll_cost = 5 + scenario["reroll_increase"]
+    for key in scenario["used"]:
+        game.used_vouchers[key] = True
+    jokers = []
+    for position, joker in enumerate(scenario["jokers"]):
+        item = _registered(
+            rules, rules.item(100 + position, joker["key"], edition=joker.get("edition"))
+        )
+        if joker.get("rental"):
+            item.set_rental(item, True)
+        _apply_values(item, joker.get("values", {}))
+        item.set_cost(item)
+        jokers.append(item)
+        rules.add("jokers", item)
+    consumables = []
+    for position, key in enumerate(scenario["consumables"]):
+        consumables.append(_registered(rules, rules.item(200 + position, key)))
+        rules.add("consumeables", consumables[-1])
+    globals_.G.shop_jokers = globals_.harness.area("shop")
+    globals_.G.shop_vouchers = globals_.harness.area("voucher")
+    globals_.G.shop_booster = globals_.harness.area("shop")
+    game.shop.joker_max = scenario["shop_slots"]
+    for position, key in enumerate(scenario["shop"]):
+        rules.add("shop_jokers", _registered(rules, rules.item(300 + position, key)))
+    rules.add("shop_booster", _registered(rules, rules.item(400, scenario["pack"])))
+    voucher = _registered(rules, rules.item(500, scenario["voucher"]))
+    voucher.shop_voucher = True
+    game.current_round.voucher = scenario["voucher"]
+    rules.add("shop_vouchers", voucher)
+    rules.run_events()
+
+    button = rules.table({"config": {"ref_table": voucher}})
+    globals_.G.FUNCS.can_redeem(button)
+    if button.config.button != "use_card":
+        return {"redeemable": False}
+    voucher.redeem(voucher)
+    rules.run_events()
+    pool, _ = globals_.get_current_pool("Voucher")
+    offered = [pool[i] for i in range(1, len(pool) + 1)]
+
+    def prices(cards: list[Any]) -> list[list[int]]:
+        return [[int(card.cost), int(card.sell_cost)] for card in cards]
+
+    return {
+        "redeemable": True,
+        "dollars": int(game.dollars),
+        "numbers": _run_numbers(rules),
+        "prices": {
+            "jokers": prices(jokers),
+            "consumables": prices(consumables),
+            "shop": prices(rules.area("shop_jokers")[: len(scenario["shop"])]),
+            "pack": prices(rules.area("shop_booster")),
+        },
+        "voucher_pool": sorted(key for key in offered if key != "UNAVAILABLE"),
+        "shop_voucher": game.current_round.voucher,
+    }
+
+
+def reroll_boss(rules: LuaRules, scenario: dict[str, Any]) -> dict[str, Any]:
+    """Press the game's boss reroll button at blind selection.
+
+    The scenario gives the vouchers redeemed, whether the boss was already
+    rerolled this ante, the money and the ante. Returns whether the game allows
+    the reroll and, if it does, the money afterwards and the boss it picked.
+    """
+    rules.new_game(
+        dollars=scenario["dollars"],
+        probability=1,
+        hands_left=4,
+        discards_left=3,
+        ante=scenario["ante"],
+    )
+    globals_ = rules.globals
+    game = globals_.G.GAME
+    globals_.G.STATE = globals_.G.STATES.BLIND_SELECT
+    game.bankrupt_at = scenario["bankrupt_at"]
+    for key in scenario["used"]:
+        game.used_vouchers[key] = True
+    game.round_resets.boss_rerolled = scenario["rerolled"]
+    for key, uses in scenario["bosses_used"].items():
+        game.bosses_used[key] = uses
+    # The blind selection screen is UI; its pieces are absorbed.
+    globals_.G.blind_select_opts = globals_.harness.anything
+    for name in (
+        "create_UIBox_blind_choice",
+        "UIBox_dyn_container",
+        "get_blind_main_colour",
+        "mix_colours",
+    ):
+        globals_[name] = globals_.harness.noop
+    button = rules.table({"config": {}, "children": [{"children": [{"config": {}}]}]})
+    globals_.G.FUNCS.reroll_boss_button(button)
+    if button.config.button != "reroll_boss":
+        return {"allowed": False}
+    globals_.G.FUNCS.reroll_boss()
+    rules.run_events()
+    return {
+        "allowed": True,
+        "dollars": int(game.dollars),
+        "rerolled": bool(game.round_resets.boss_rerolled),
+        "boss": str(game.round_resets.blind_choices.Boss),
+    }
+
+
+def shop_playing_cards(rules: LuaRules, scenario: dict[str, Any]) -> dict[str, Any]:
+    """Fill the shop many times with the game's ``create_card_for_shop``, then buy
+    the first playing card offered.
+
+    The scenario gives the vouchers redeemed (Magic Trick, Illusion), the shop's
+    rates, the discount and the jokers owned. Returns each card created (its
+    set, enhancement, edition and price) and the money, deck size and joker
+    values after the purchase.
+    """
+    rules.new_game(
+        dollars=scenario["dollars"],
+        probability=1,
+        hands_left=4,
+        discards_left=3,
+        ante=scenario["ante"],
+        seed=scenario["seed"],
+    )
+    globals_ = rules.globals
+    game = globals_.G.GAME
+    globals_.G.STATE = globals_.G.STATES.SHOP
+    game.discount_percent = scenario["discount"]
+    for key in scenario["used"]:
+        game.used_vouchers[key] = True
+    (
+        game.joker_rate,
+        game.tarot_rate,
+        game.planet_rate,
+        game.playing_card_rate,
+        game.spectral_rate,
+    ) = scenario["rates"]
+    jokers = []
+    for position, key in enumerate(scenario["jokers"]):
+        jokers.append(rules.item(100 + position, key))
+        rules.add("jokers", jokers[-1])
+    globals_.G.shop_jokers = globals_.harness.area("shop")
+    cards = [
+        globals_.create_card_for_shop(globals_.G.shop_jokers) for _ in range(scenario["count"])
+    ]
+    rules.run_events()
+    described = []
+    for card in cards:
+        edition = card.edition and card.edition.type
+        description = {
+            "set": str(card.ability.set),
+            "edition": f"e_{edition}" if edition else None,
+            "cost": int(card.cost),
+        }
+        if card.ability.set in ("Default", "Enhanced"):
+            description.update(_describe_card(card))
+        described.append(description)
+    bought = next((card for card in cards if card.ability.set in ("Default", "Enhanced")), None)
+    result: dict[str, Any] = {"cards": described}
+    if bought is not None:
+        rules.add("shop_jokers", bought)
+        button = rules.table({"config": {"ref_table": bought}})
+        globals_.G.FUNCS.can_buy(button)
+        if button.config.button != "buy_from_shop":
+            result["bought"] = {"allowed": False}
+            return result
+        globals_.G.FUNCS.buy_from_shop(button)
+        rules.run_events()
+        result["bought"] = {
+            "allowed": True,
+            "dollars": int(game.dollars),
+            "deck": len(rules.area("deck")),
+            "jokers": [_flatten_ability(item.ability) for item in jokers],
+        }
+    return result

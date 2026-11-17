@@ -129,7 +129,13 @@ class PlayingCard:
 
 @dataclass(slots=True)
 class Item:
-    """A joker or consumable. ``values`` holds its changing internal numbers."""
+    """A joker, consumable, voucher or booster pack. ``values`` holds its changing
+    internal numbers.
+
+    A playing card for sale in the shop is also an ``Item``: its ``key`` is
+    ``c_base`` or the card's enhancement, and ``playing_card`` holds the card,
+    edition included (ADR 0005).
+    """
 
     uid: int
     key: str
@@ -143,6 +149,7 @@ class Item:
     cost: int = 0
     sell_value: int = 0
     values: dict[str, Scalar] = field(default_factory=dict[str, Scalar])
+    playing_card: PlayingCard | None = None
 
 
 @dataclass(slots=True)
@@ -294,6 +301,15 @@ class RunState:
     pack: OpenPack | None
     #: How much the next Ectoplasm reduces the hand size (``G.GAME.ecto_minus``).
     ecto_minus: int
+    # Vouchers (G.GAME.used_vouchers and current_round.voucher).
+    #: Redeemed vouchers, in the order they were redeemed.
+    used_vouchers: list[str]
+    #: The voucher this ante's shops offer until it is redeemed.
+    shop_voucher: str | None
+    #: Vouchers for sale in the shop now.
+    shop_vouchers: list[Item]
+    #: Whether Director's Cut has rerolled this ante's boss (``boss_rerolled``).
+    boss_rerolled: bool
     # Consumable history.
     last_tarot_planet: str | None
     consumable_usage: dict[str, int]

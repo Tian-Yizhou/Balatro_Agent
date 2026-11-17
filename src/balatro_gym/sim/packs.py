@@ -17,10 +17,10 @@ from .content import CENTERS, pool
 from .effects import Context, ContextKind, calculate_joker, value
 from .events import PackOpened
 from .inventory import draw_cards
-from .items import new_item, new_playing_card
+from .items import new_item
 from .scope import Scope
-from .shop import create_card, poll_edition
-from .state import Item, OpenPack, Phase, PlayingCard, Suit
+from .shop import create_card, create_playing_card, poll_edition
+from .state import HandType, Item, OpenPack, Phase, PlayingCard
 
 __all__ = [
     "BOOSTER_SLOTS",
@@ -44,9 +44,6 @@ _CONTENTS = {
     "Spectral": ("Spectral", "spe"),
     "Buffoon": ("Joker", "buf"),
 }
-
-# Every rank and suit, for a Standard pack card's random front (``G.P_CARDS``).
-_FRONTS = tuple((rank, suit) for suit in Suit for rank in range(2, 15))
 
 
 def pack_kind(key: str) -> str:
@@ -102,14 +99,11 @@ def open_pack(scope: Scope, pack: Item, return_phase: Phase) -> None:
     if pack.cost > 0:
         scope.change_money(-pack.cost, "pack")
     kind = pack_kind(pack.key)
-    for _ in range(int(value(pack, "extra"))):
+    for position in range(int(value(pack, "extra"))):
         if kind == "Standard":
             opened.playing_cards.append(_standard_card(scope))
         else:
-            set_name, key_append = _CONTENTS[kind]
-            opened.items.append(
-                create_card(scope, set_name, "pack", key_append=key_append, soulable=True)
-            )
+            opened.items.append(_pack_item(scope, kind, position))
     cards = (*opened.items, *opened.playing_cards)
     scope.emit(PackOpened(pack.uid, pack.key, tuple(card.uid for card in cards)))
     for joker in list(state.jokers):
@@ -119,17 +113,50 @@ def open_pack(scope: Scope, pack: Item, return_phase: Phase) -> None:
         draw_cards(scope, state.hand_size - len(state.hand))
 
 
+def _pack_item(scope: Scope, kind: str, position: int) -> Item:
+    """The joker or consumable at ``position`` in a new pack of ``kind``.
+
+    With Omen Globe each Arcana card may be a Spectral card instead; with
+    Telescope a Celestial pack's first card is the Planet of the most played hand.
+    """
+    state = scope.state
+    set_name, key_append = _CONTENTS[kind]
+    forced_key = None
+    if (
+        kind == "Arcana"
+        and "v_omen_globe" in state.used_vouchers
+        and scope.rng.random("omen_globe") > 0.8
+    ):
+        set_name, key_append = "Spectral", "ar2"
+    if kind == "Celestial" and "v_telescope" in state.used_vouchers and position == 0:
+        forced_key = _most_played_planet(scope)
+    return create_card(
+        scope, set_name, "pack", key_append=key_append, forced_key=forced_key, soulable=True
+    )
+
+
+def _most_played_planet(scope: Scope) -> str | None:
+    """The Planet of the visible hand played most often, the first one in the
+    game's hand order on a tie; ``None`` before any hand is played."""
+    hand = None
+    most = 0
+    for hand_type in HandType:
+        level = scope.state.hands[hand_type]
+        if level.visible and level.played > most:
+            hand, most = hand_type, level.played
+    if hand is None:
+        return None
+    return next(
+        center.key for center in pool("Planet") if center.config.get("hand_type") == hand.value
+    )
+
+
 def _standard_card(scope: Scope) -> PlayingCard:
     """A random playing card for a Standard pack: maybe enhanced, with an edition
     and a seal at their own odds."""
-    state = scope.state
-    ante = state.ante
-    enhancement = None
-    if scope.rng.random(f"stdset{ante}") > 0.6:
-        enhancements = [center.key for center in pool("Enhanced")]
-        enhancement = scope.rng.choice(f"Enhancedsta{ante}", enhancements)
-    rank, suit = scope.rng.choice(f"frontsta{ante}", _FRONTS)
-    card = new_playing_card(state, rank, suit, enhancement)
+    ante = scope.state.ante
+    set_name = "Enhanced" if scope.rng.random(f"stdset{ante}") > 0.6 else "Base"
+    card = create_playing_card(scope, set_name, "sta")
     card.edition = poll_edition(scope, f"standard_edition{ante}", mod=2, no_negative=True)
     seal_rate = 10
     if scope.rng.random(f"stdseal{ante}") > 1 - 0.02 * seal_rate:

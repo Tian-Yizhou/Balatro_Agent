@@ -10,16 +10,20 @@ from typing import Any
 from balatro_gym.sim import Game, macros
 from balatro_gym.sim.actions import (
     Action,
+    Buy,
     BuyPack,
     CashOut,
     ContinueEndless,
     Discard,
     Pick,
+    RedeemVoucher,
     Reroll,
+    RerollBoss,
     SelectBlind,
     SellJoker,
     UseConsumable,
 )
+from balatro_gym.sim.blinds import boss_candidates
 from balatro_gym.sim.content import CENTERS, pool
 from balatro_gym.sim.engine import _end_round as end_round
 from balatro_gym.sim.engine import new_run
@@ -31,7 +35,7 @@ from balatro_gym.sim.modifiers import scoring_chips
 from balatro_gym.sim.packs import pack_kind
 from balatro_gym.sim.scope import Scope
 from balatro_gym.sim.scoring import evaluate_play, level_up_hand
-from balatro_gym.sim.shop import is_available
+from balatro_gym.sim.shop import create_card_for_shop, is_available
 from balatro_gym.sim.state import (
     BlindSlot,
     BlindState,
@@ -230,6 +234,8 @@ def engine_score(scenario: dict[str, Any]) -> dict[str, Any]:
         item.values.update(joker.get("values", {}))
         jokers.append(item)
     state.jokers = list(jokers)
+    state.consumables = [new_item(state, key) for key in scenario.get("consumables", [])]
+    state.used_vouchers = list(scenario.get("vouchers", []))
     scope = Scope(state)
     chips_before = state.chips
     destroyed = evaluate_play(scope, played)
@@ -646,6 +652,9 @@ def engine_open_pack(scenario: dict[str, Any], game_cards: list[dict[str, Any]])
     state.ante = scenario["ante"]
     state.money = scenario["dollars"]
     state.phase = Phase.SHOP
+    state.used_vouchers = list(scenario.get("vouchers", []))
+    for name, played in scenario.get("played_hands", {}).items():
+        state.hands[HandType(name)].played = played
     for joker in scenario["jokers"]:
         state.jokers.append(new_item(state, joker["key"], edition=joker.get("edition")))
     state.shop_boosters = [new_item(state, scenario["pack"])]
@@ -676,23 +685,36 @@ def engine_open_pack(scenario: dict[str, Any], game_cards: list[dict[str, Any]])
     return result
 
 
-def compare_open_pack(ours: dict[str, Any], game: dict[str, Any]) -> list[str]:
+def compare_open_pack(
+    scenario: dict[str, Any], ours: dict[str, Any], game: dict[str, Any]
+) -> list[str]:
     """Differences between opening a pack in the engine and in the game.
 
     The cards are random, so only their kinds are compared, with The Soul and
-    Black Hole, which may stand in for any card of a pack, set aside. Playing
-    cards must have a valid enhancement and no Negative edition.
+    Black Hole, which may stand in for any card of a pack, set aside; with Omen
+    Globe an Arcana card may be a Spectral card. Playing cards must have a valid
+    enhancement and no Negative edition. With Telescope, once a hand has been
+    played, a Celestial pack's first card must be the same.
     """
     problems = [
         f"{field} {ours[field]} vs {game[field]}"
         for field in ("kind", "choices", "size", "dollars", "pickable")
         if ours[field] != game[field]
     ]
+    vouchers = scenario.get("vouchers", [])
+    omen_globe = "v_omen_globe" in vouchers and game["kind"] == "Arcana"
 
     def kinds(cards: list[dict[str, Any]]) -> list[str]:
         return sorted(
-            card["set"] for card in cards if card.get("key") not in ("c_soul", "c_black_hole")
+            "Tarot" if omen_globe and card["set"] == "Spectral" else card["set"]
+            for card in cards
+            if card.get("key") not in ("c_soul", "c_black_hole")
         )
+
+    first_differs = ours["cards"][0].get("key") != game["cards"][0].get("key")
+    telescope = "v_telescope" in vouchers and bool(scenario.get("played_hands"))
+    if telescope and game["kind"] == "Celestial" and first_differs:
+        problems.append(f"first card {ours['cards'][0]} vs {game['cards'][0]}")
 
     enhancements = {center.key for center in pool("Enhanced")}
     for side, cards in (("engine", ours["cards"]), ("game", game["cards"])):
@@ -706,4 +728,210 @@ def compare_open_pack(ours: dict[str, Any], game: dict[str, Any]) -> list[str]:
     our_kinds, game_kinds = kinds(ours["cards"]), kinds(game["cards"])
     if souls == game_souls and our_kinds != game_kinds:
         problems.append(f"cards {our_kinds} vs {game_kinds}")
+    return problems
+
+
+def engine_redeem_voucher(scenario: dict[str, Any]) -> dict[str, Any]:
+    """Redeem a voucher in the engine; report what ``rules.redeem_voucher`` does."""
+    state = new_run("lua-scenario")
+    state.deck.clear()
+    state.phase = Phase.SHOP
+    state.ante = scenario["ante"]
+    state.money = scenario["dollars"]
+    state.hands_per_round, state.hands_left = 4, scenario["hands_left"]
+    state.discards_per_round, state.discards_left = 3, scenario["discards_left"]
+    state.reroll_cost_increase = scenario["reroll_increase"]
+    state.reroll_cost = state.base_reroll_cost + state.reroll_cost_increase
+    state.used_vouchers = list(scenario["used"])
+    jokers = []
+    for joker in scenario["jokers"]:
+        item = new_item(state, joker["key"], edition=joker.get("edition"))
+        item.rental = joker.get("rental", False)
+        item.values.update(joker.get("values", {}))
+        set_cost(state, item)
+        jokers.append(item)
+    state.jokers = list(jokers)
+    state.consumables = [new_item(state, key) for key in scenario["consumables"]]
+    consumables = list(state.consumables)
+    state.shop_joker_max = scenario["shop_slots"]
+    state.shop_cards = [new_item(state, key) for key in scenario["shop"]]
+    shop = list(state.shop_cards)
+    state.shop_boosters = [new_item(state, scenario["pack"])]
+    state.shop_vouchers = [new_item(state, scenario["voucher"])]
+    state.shop_voucher = scenario["voucher"]
+    game = Game(state)
+    if not game.is_legal(RedeemVoucher(0)):
+        return {"redeemable": False}
+    game.step(RedeemVoucher(0))
+
+    def prices(items: list[Item]) -> list[list[int]]:
+        return [[item.cost, item.sell_value] for item in items]
+
+    return {
+        "redeemable": True,
+        "dollars": state.money,
+        "numbers": {
+            "ante": state.ante,
+            "hands_per_round": state.hands_per_round,
+            "hands_left": state.hands_left,
+            "discards_per_round": state.discards_per_round,
+            "discards_left": state.discards_left,
+            "hand_size": state.hand_size,
+            "joker_slots": state.joker_slots,
+            "consumable_slots": state.consumable_slots,
+            "rates": [
+                state.joker_rate,
+                state.tarot_rate,
+                state.planet_rate,
+                state.playing_card_rate,
+                state.spectral_rate,
+                state.edition_rate,
+            ],
+            "interest_cap": state.interest_cap,
+            "discount_percent": state.discount_percent,
+            "base_reroll_cost": state.base_reroll_cost,
+            "reroll_cost": state.reroll_cost,
+            "shop_slots": state.shop_joker_max,
+            "shop_cards": len(state.shop_cards),
+        },
+        "prices": {
+            "jokers": prices(jokers),
+            "consumables": prices(consumables),
+            "shop": prices(shop),
+            "pack": prices(state.shop_boosters),
+        },
+        "voucher_pool": sorted(
+            center.key for center in pool("Voucher") if is_available(state, center)
+        ),
+        "shop_voucher": state.shop_voucher,
+    }
+
+
+def engine_reroll_boss(scenario: dict[str, Any], game: dict[str, Any]) -> dict[str, Any]:
+    """Press the boss reroll in the engine; report what ``rules.reroll_boss`` does.
+
+    The new boss is random, so the boss the game picked is reported back if the
+    engine could have picked it too.
+    """
+    state = new_run("lua-scenario")
+    state.ante = scenario["ante"]
+    state.money = scenario["dollars"]
+    state.bankrupt_at = scenario["bankrupt_at"]
+    state.used_vouchers = list(scenario["used"])
+    state.boss_rerolled = scenario["rerolled"]
+    state.bosses_used = dict.fromkeys(state.bosses_used, 0) | scenario["bosses_used"]
+    candidates = boss_candidates(state.ante, state.win_ante, state.bosses_used)
+    run = Game(state)
+    if not run.is_legal(RerollBoss()):
+        return {"allowed": False}
+    run.step(RerollBoss())
+    picked = state.blind_choices[BlindSlot.BOSS]
+    assert picked in candidates
+    return {
+        "allowed": True,
+        "dollars": state.money,
+        "rerolled": state.boss_rerolled,
+        "boss": game.get("boss") if game.get("boss") in candidates else f"not in {candidates}",
+    }
+
+
+def _shop_kinds(scenario: dict[str, Any], cards: list[dict[str, Any]]) -> list[str]:
+    """The kinds of shop cards seen: each card's set and, in shops that sell nothing
+    but playing cards (where enough of them are made), whether a playing card
+    has an edition and which editions occur."""
+    joker_rate, tarot_rate, planet_rate, _, spectral_rate = scenario["rates"]
+    only_playing = joker_rate + tarot_rate + planet_rate + spectral_rate == 0
+    kinds = set()
+    for card in cards:
+        kinds.add(card["set"])
+        if only_playing and card["edition"]:
+            kinds.update((f"{card['set']} with an edition", card["edition"]))
+    return sorted(kinds)
+
+
+def engine_shop_playing_cards(scenario: dict[str, Any], game: dict[str, Any]) -> dict[str, Any]:
+    """Fill a shop in the engine; report what ``rules.shop_playing_cards`` does.
+
+    The cards are random, so each card's set (and a playing card's edition) is
+    reported as a sorted list of the kinds seen; prices are checked on the
+    playing cards the game created, and the purchase on the game's first one.
+    """
+    state = new_run(scenario["seed"])
+    state.deck.clear()
+    state.phase = Phase.SHOP
+    state.ante = scenario["ante"]
+    state.money = scenario["dollars"]
+    state.discount_percent = scenario["discount"]
+    state.used_vouchers = list(scenario["used"])
+    (
+        state.joker_rate,
+        state.tarot_rate,
+        state.planet_rate,
+        state.playing_card_rate,
+        state.spectral_rate,
+    ) = scenario["rates"]
+    jokers = [new_item(state, key) for key in scenario["jokers"]]
+    state.jokers = list(jokers)
+    scope = Scope(state)
+    made = [create_card_for_shop(scope) for _ in range(scenario["count"])]
+    ours = [
+        {
+            "set": CENTERS[item.key].set,
+            "edition": item.playing_card.edition if item.playing_card else item.edition,
+        }
+        for item in made
+    ]
+    game_playing = [card for card in game["cards"] if card["set"] in ("Default", "Enhanced")]
+    offers = [_shop_offer(state, card) for card in game_playing]
+    result: dict[str, Any] = {
+        "kinds": _shop_kinds(scenario, ours),
+        "costs": [offer.cost for offer in offers],
+    }
+    if offers:
+        state.shop_cards = [offers[0]]
+        run = Game(state)
+        if not run.is_legal(Buy(0)):
+            result["bought"] = {"allowed": False}
+        else:
+            run.step(Buy(0))
+            result["bought"] = {
+                "allowed": True,
+                "dollars": state.money,
+                "deck": len(state.deck),
+                "jokers": [dict(joker.values) for joker in jokers],
+            }
+    return result
+
+
+def _shop_offer(state: RunState, card: dict[str, Any]) -> Item:
+    """A playing card for sale, as the game described it."""
+    playing_card = _scenario_card(card)
+    item = Item(
+        uid=playing_card.uid, key=card["enhancement"] or "c_base", playing_card=playing_card
+    )
+    set_cost(state, item)
+    return item
+
+
+def compare_shop_playing_cards(
+    scenario: dict[str, Any], ours: dict[str, Any], game: dict[str, Any]
+) -> list[str]:
+    """Differences between filling a shop in the engine and in the game."""
+    problems = []
+    game_kinds = _shop_kinds(scenario, game["cards"])
+    if ours["kinds"] != game_kinds:
+        problems.append(f"kinds {ours['kinds']} vs {game_kinds}")
+    game_costs = [card["cost"] for card in game["cards"] if card["set"] in ("Default", "Enhanced")]
+    if ours["costs"] != game_costs:
+        problems.append(f"costs {ours['costs']} vs {game_costs}")
+    if ("bought" in ours) != ("bought" in game):
+        problems.append("only one side bought a card")
+    elif "bought" in ours:
+        mine, theirs = ours["bought"], game["bought"]
+        for field in ("allowed", "dollars", "deck"):
+            if mine.get(field) != theirs.get(field):
+                problems.append(f"bought {field} {mine.get(field)} vs {theirs.get(field)}")
+        if mine.get("allowed"):
+            keys = [{"key": key} for key in scenario["jokers"]]
+            problems.extend(_compare_jokers(mine["jokers"], theirs["jokers"], keys))
     return problems
