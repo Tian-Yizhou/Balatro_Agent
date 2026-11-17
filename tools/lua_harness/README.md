@@ -39,10 +39,15 @@ Covered so far:
 - playing cards for sale with Magic Trick and Illusion (`create_card_for_shop`),
   their prices, and buying one (`G.FUNCS.buy_from_shop`);
 - Planet cards held with Observatory, in the scoring check.
+- every boss blind with the game's own `Blind` methods: setting it (debuffs,
+  hands, discards, hand size, Amber Acorn), cards staying face down, playing a
+  hand (The Hook, The Tooth), the next draw (Cerulean Bell, Crimson Heart),
+  disabling it (Chicot) and defeating it; and scoring against the bosses that act
+  on a played hand.
 
 The rule checks live in `rules.py`, with the stand-ins in `game_env.lua` and the
 random situations in `scoring_scenarios.py`, `consumable_scenarios.py` and
-`voucher_scenarios.py`. Where
+`voucher_scenarios.py` and `boss_scenarios.py`. Where
 the game draws something random (the Emperor's cards, Sigil's suit, the cards in a
 pack), what must hold whatever the draw is compared instead: the kind and number of
 cards, one suit for the whole hand, and so on, since the engine's random draws

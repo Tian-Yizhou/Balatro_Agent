@@ -1,10 +1,12 @@
-"""Blind definitions, score targets and boss selection.
+"""Blind definitions, score targets, boss selection, and the boss rules that
+decide which cards are debuffed or dealt face down.
 
 Score targets use IEEE doubles exactly as the game does, so in very long endless
 runs they grow to infinity and then become NaN, as they do in the original.
 
 Source: game.lua ``P_BLINDS``; functions/misc_functions.lua ``get_blind_amount``;
-functions/common_events.lua ``get_new_boss``.
+functions/common_events.lua ``get_new_boss``; blind.lua ``Blind:debuff_card``
+and ``Blind:stay_flipped``.
 """
 
 from __future__ import annotations
@@ -13,16 +15,23 @@ import math
 from collections.abc import Mapping
 from dataclasses import dataclass
 
+from .content import BLIND_DATA
+from .effects import SUIT_NAMES, is_face, is_suit
 from .rng import Rng
+from .scope import Scope
+from .state import PlayingCard, RunState
 
 __all__ = [
     "BLINDS",
     "BlindInfo",
     "boss_candidates",
     "choose_boss",
+    "debuffs_card",
     "get_blind_amount",
+    "keeps_joker_debuffs",
     "lua_floor",
     "lua_mod",
+    "stays_face_down",
 ]
 
 
@@ -37,6 +46,12 @@ class BlindInfo:
     boss: bool = False
     showdown: bool = False
     boss_min: int = 0
+
+    @property
+    def debuff(self) -> Mapping[str, object]:
+        """The boss's debuff rule, such as ``{"suit": "Clubs"}`` or ``{"h_size_ge": 5}``."""
+        rule: Mapping[str, object] = BLIND_DATA[self.key].get("debuff", {})
+        return rule
 
 
 def _boss(key: str, name: str, mult: float = 2, minimum: int = 1) -> BlindInfo:
@@ -165,6 +180,63 @@ def boss_candidates(
             eligible[info.key] = bosses_used.get(info.key, 0)
     fewest = min(eligible.values())
     return sorted(key for key, uses in eligible.items() if uses <= fewest)
+
+
+def _active_boss(state: RunState) -> BlindInfo | None:
+    """The boss being played, unless it is disabled."""
+    blind = state.blind
+    if blind is None or blind.disabled or not BLINDS[blind.key].boss:
+        return None
+    return BLINDS[blind.key]
+
+
+def debuffs_card(state: RunState, card: PlayingCard) -> bool:
+    """Whether the blind being played debuffs a playing card.
+
+    Source: blind.lua ``Blind:debuff_card``.
+    """
+    info = _active_boss(state)
+    if info is None:
+        return False
+    rule = info.debuff
+    suit = rule.get("suit")
+    if suit is not None and is_suit(state, card, SUIT_NAMES[str(suit)], bypass_debuff=True):
+        return True
+    if rule.get("is_face") == "face" and is_face(state, card, from_boss=True):
+        return True
+    if info.key == "bl_pillar" and card.played_this_ante:
+        return True
+    return info.key == "bl_final_leaf"
+
+
+def keeps_joker_debuffs(state: RunState) -> bool:
+    """Whether jokers keep their debuffs when debuffs are re-checked: Crimson Heart
+    decides them itself. Source: blind.lua ``Blind:debuff_card``."""
+    info = _active_boss(state)
+    return info is not None and info.key == "bl_final_heart"
+
+
+def stays_face_down(scope: Scope, card: PlayingCard) -> bool:
+    """Whether a card drawn into the hand stays face down.
+
+    The Wheel turns 1 in 7 cards down, The House the whole first hand, The Mark
+    every face card, and The Fish the cards drawn after a hand is played.
+    Source: blind.lua ``Blind:stay_flipped``.
+    """
+    state = scope.state
+    info = _active_boss(state)
+    if info is None:
+        return False
+    if info.key == "bl_wheel" and scope.chance("wheel", 7):
+        return True
+    if info.key == "bl_house" and not (
+        state.hands_played_this_round or state.discards_used_this_round
+    ):
+        return True
+    if info.key == "bl_mark" and is_face(state, card, from_boss=True):
+        return True
+    assert state.blind is not None
+    return info.key == "bl_fish" and state.blind.prepped
 
 
 def _lua_log10(number: float) -> float:

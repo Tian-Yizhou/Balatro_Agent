@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from .blinds import BLINDS
 from .cards import card_id
 from .content import CENTERS
 from .effects import (
@@ -32,6 +33,7 @@ from .effects import (
     value,
 )
 from .events import ItemCreated
+from .inventory import disable_blind
 from .items import copy_item, set_cost
 from .scope import Scope
 from .state import BlindSlot, Item
@@ -577,4 +579,17 @@ def _perkeo(scope: Scope, joker: Item, context: Context) -> Effect | None:
             scope.emit(ItemCreated(copy.uid, copy.key, "consumables"))
 
         scope.defer(duplicate)
+    return None
+
+
+@register_joker("j_chicot")
+def _chicot(scope: Scope, joker: Item, context: Context) -> Effect | None:
+    """Disables every boss blind as it is set (and one already being played when
+    Chicot is gained, in ``inventory.add_to_deck``)."""
+    blind = scope.state.blind
+    is_boss = blind is not None and BLINDS[blind.key].boss
+    if context.kind is ContextKind.SETTING_BLIND and not context.blueprint and is_boss:
+        # The game queues this inside another queued event, so it runs after the
+        # deck is shuffled for the round.
+        scope.defer(lambda: scope.defer(lambda: disable_blind(scope)))
     return None

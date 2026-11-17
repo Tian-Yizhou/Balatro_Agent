@@ -13,6 +13,7 @@ from typing import Any
 __all__ = [
     "CardDescription",
     "LuaRules",
+    "boss_round",
     "discard",
     "end_of_round",
     "open_pack",
@@ -33,6 +34,7 @@ _SOURCES = (
     "functions/common_events.lua",
     "functions/state_events.lua",
     "functions/button_callbacks.lua",
+    "blind.lua",
     "game.lua",
 )
 
@@ -250,6 +252,10 @@ def score(rules: LuaRules, scenario: dict[str, Any]) -> dict[str, Any]:
         levels=scenario["levels"],
         seed=str(scenario.get("seed", "")),
     )
+    blind = scenario.get("blind")
+    if blind is not None:
+        # Set before any card exists, so the cards keep the scenario's debuffs.
+        _set_boss(rules, blind)
     tarots_used = scenario.get("tarots_used", 0)
     rules.globals.G.GAME.consumeable_usage_total = rules.table(
         {
@@ -907,4 +913,122 @@ def shop_playing_cards(rules: LuaRules, scenario: dict[str, Any]) -> dict[str, A
             "deck": len(rules.area("deck")),
             "jokers": [_flatten_ability(item.ability) for item in jokers],
         }
+    return result
+
+
+def _set_boss(rules: LuaRules, blind: dict[str, Any]) -> Any:
+    """Set the boss blind ``blind["key"]`` with the game's own ``Blind:set_blind``,
+    and restore what it remembers from earlier hands this round."""
+    globals_ = rules.globals
+    boss = globals_.harness_set_blind(blind["key"])
+    rules.run_events()
+    if blind["key"] == "bl_eye":
+        for hand in blind.get("hands_used", []):
+            boss.hands[hand] = True
+    if blind["key"] == "bl_mouth" and blind.get("only_hand"):
+        boss.only_hand = blind["only_hand"]
+    if blind.get("disabled"):
+        boss.disabled = True
+    rules.game.current_round.most_played_poker_hand = blind.get("most_played", "High Card")
+    return boss
+
+
+def boss_round(rules: LuaRules, scenario: dict[str, Any]) -> dict[str, Any]:
+    """Play through a boss blind's effects with the game's own ``Blind`` methods.
+
+    The blind is set with jokers, a hand and a deck in place, and the jokers react
+    to it (Chicot); then each card in hand is checked for staying face down
+    (``Blind:stay_flipped``), the cards at ``played`` are played
+    (``Blind:press_play``), the hand is drawn again (``Blind:drawn_to_hand``), the
+    blind may be disabled, and it is defeated. Returns what each step changed.
+    """
+    rules.new_game(
+        dollars=scenario["dollars"],
+        probability=scenario["probability"],
+        hands_left=4,
+        discards_left=3,
+        hands_played=scenario["hands_played"],
+        discards_used=scenario["discards_used"],
+        ante=scenario["ante"],
+        seed=scenario["seed"],
+    )
+    globals_ = rules.globals
+    game = globals_.G.GAME
+    game.round_resets.hands = 4
+    game.round_resets.discards = 3
+    jokers = []
+    for position, joker in enumerate(scenario["jokers"]):
+        item = rules.item(
+            joker["uid"], joker["key"], edition=joker.get("edition"), position=position
+        )
+        jokers.append(item)
+        rules.add("jokers", item)
+    hand = [_playing_card(rules, card, i) for i, card in enumerate(scenario["hand"])]
+    deck = [_playing_card(rules, card, i) for i, card in enumerate(scenario["deck"])]
+    for card, description in zip(
+        [*hand, *deck], [*scenario["hand"], *scenario["deck"]], strict=True
+    ):
+        card.ability.played_this_ante = description.get("played_this_ante", False)
+    for card in hand:
+        rules.add("hand", card)
+    for card in deck:
+        rules.add("deck", card)
+    globals_.G.play = globals_.harness.area("play")
+    key = scenario["blind"]
+    blind = globals_.harness_set_blind(key)
+    rules.run_events()
+    for item in rules.area("jokers"):
+        item.calculate_joker(
+            item, rules.table({"setting_blind": True, "blind": globals_.G.P_BLINDS[key]})
+        )
+    rules.run_events()
+
+    def snapshot() -> dict[str, Any]:
+        owned = rules.area("jokers")
+        return {
+            "debuffed": sorted(int(card.ID) for card in [*hand, *deck] if card.debuff),
+            "jokers_debuffed": sorted(int(item.ID) for item in owned if item.debuff),
+            "jokers_face_down": sum(item.facing == "back" for item in owned),
+            "jokers": sorted(int(item.ID) for item in owned),
+            "hands_left": int(game.current_round.hands_left),
+            "discards_left": int(game.current_round.discards_left),
+            "hand_size": int(globals_.G.hand.config.card_limit),
+            "chips": float(blind.chips),
+            "disabled": bool(blind.disabled),
+            "dollars": int(game.dollars),
+        }
+
+    result: dict[str, Any] = {"set": snapshot()}
+    result["face_down"] = [
+        bool(blind.stay_flipped(blind, globals_.G.hand, card)) for card in rules.area("hand")
+    ]
+    played = [rules.area("hand")[i] for i in scenario["played"]]
+    for card in played:
+        globals_.G.hand.remove_card(globals_.G.hand, card)
+        rules.add("play", card)
+    blind.press_play(blind)
+    rules.run_events()
+    result["played"] = {
+        **snapshot(),
+        "hook_discarded": sum(bool(card.ability.discarded) for card in hand),
+        # The harness doesn't move cards, so discarded cards are still in the hand.
+        "face_down": [
+            bool(blind.stay_flipped(blind, globals_.G.hand, card))
+            for card in rules.area("hand")
+            if not card.ability.discarded
+        ],
+    }
+    blind.drawn_to_hand(blind)
+    rules.run_events()
+    result["drawn"] = {
+        **snapshot(),
+        "forced": sum(bool(card.ability.forced_selection) for card in rules.area("hand")),
+    }
+    if scenario["disable"]:
+        blind.disable(blind)
+        rules.run_events()
+        result["disabled"] = snapshot()
+    blind.defeat(blind)
+    rules.run_events()
+    result["defeated"] = snapshot()
     return result

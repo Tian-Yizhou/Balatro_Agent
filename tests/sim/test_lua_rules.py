@@ -19,15 +19,18 @@ from typing import Any
 
 import pytest
 
+from balatro_gym.sim.blinds import BLINDS
 from balatro_gym.sim.consumables import IMPLEMENTED as CONSUMABLES
 from balatro_gym.sim.content import pool
 from balatro_gym.sim.effects import JOKERS
 from scenarios import (
+    compare_boss_round,
     compare_consumable_use,
     compare_open_pack,
     compare_results,
     compare_shop,
     compare_shop_playing_cards,
+    engine_boss_round,
     engine_discard,
     engine_end_of_round,
     engine_open_pack,
@@ -91,6 +94,7 @@ VERIFIED_JOKERS = sorted(key for key in JOKERS if key != "j_misprint")
 VERIFIED_SEALS = ("Red", "Gold", "Blue", "Purple")
 IMPLEMENTED = set(JOKERS) | set(CONSUMABLES)
 PACKS = [center.key for center in pool("Booster")]
+BOSSES = sorted(key for key, info in BLINDS.items() if info.boss)
 REQUIRES = {center.key: list(center.raw.get("requires", ())) for center in pool("Voucher")}
 
 
@@ -331,6 +335,62 @@ def test_random_shop_playing_cards_match(lua: Any) -> None:
         game = fill_in_game(lua, scenario)
         ours = engine_shop_playing_cards(scenario, game)
         problems = compare_shop_playing_cards(scenario, ours, game)
+        if problems:
+            mismatches.append((number, problems))
+    assert mismatches == []
+
+
+def test_boss_rounds_match_original_game_vectors() -> None:
+    cases = _vectors()["boss_round"]
+    assert {case["scenario"]["blind"] for case in cases} == set(BOSSES)
+    mismatches = []
+    for number, case in enumerate(cases):
+        scenario = case["scenario"]
+        problems = compare_boss_round(scenario, engine_boss_round(scenario), case["expected"])
+        if problems:
+            mismatches.append((number, problems))
+    assert mismatches == []
+
+
+def test_boss_scoring_matches_original_game_vectors() -> None:
+    cases = _vectors()["boss_scoring"]
+    assert len(cases) >= 100
+    mismatches = []
+    for number, case in enumerate(cases):
+        scenario = case["scenario"]
+        problems = compare_results(engine_score(scenario), case["expected"], scenario["jokers"])
+        if problems:
+            mismatches.append((number, problems))
+    assert mismatches == []
+
+
+@live
+def test_random_boss_rounds_match(lua: Any) -> None:
+    scenarios = _load("boss_scenarios")
+    play_in_game = _load("rules").boss_round
+    mismatches = []
+    for number, scenario in enumerate(
+        scenarios.random_boss_round_scenarios(1, 1200, BOSSES, VERIFIED_JOKERS)
+    ):
+        problems = compare_boss_round(
+            scenario, engine_boss_round(scenario), play_in_game(lua, scenario)
+        )
+        if problems:
+            mismatches.append((number, problems))
+    assert mismatches == []
+
+
+@live
+def test_random_boss_scoring_matches(lua: Any) -> None:
+    scenarios = _load("boss_scenarios")
+    score_in_game = _load("rules").score
+    mismatches = []
+    for number, scenario in enumerate(
+        scenarios.random_boss_scoring_scenarios(1, 1200, VERIFIED_JOKERS, VERIFIED_SEALS)
+    ):
+        problems = compare_results(
+            engine_score(scenario), score_in_game(lua, scenario), scenario["jokers"]
+        )
         if problems:
             mismatches.append((number, problems))
     assert mismatches == []

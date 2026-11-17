@@ -20,9 +20,11 @@ def select_cards(state: RunState, indices: Iterable[int]) -> list[Action]:
     """Toggles that leave exactly the hand cards at ``indices`` selected.
 
     Cards that should not be selected are deselected first, then the others are
-    selected from left to right.
+    selected from left to right. A card that Cerulean Bell forces stays selected
+    and counts towards the limit.
     """
-    wanted = sorted(set(indices))
+    forced = {i for i, card in enumerate(state.hand) if card.forced_selection and card.selected}
+    wanted = sorted(set(indices) | forced)
     if any(not 0 <= i < len(state.hand) for i in wanted):
         raise ValueError(f"indices {wanted} out of range for a hand of {len(state.hand)}")
     if len(wanted) > SELECTION_LIMIT:

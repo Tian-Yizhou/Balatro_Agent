@@ -23,13 +23,19 @@ from balatro_gym.sim.actions import (
     SellJoker,
     UseConsumable,
 )
-from balatro_gym.sim.blinds import boss_candidates
+from balatro_gym.sim.blinds import boss_candidates, stays_face_down
+from balatro_gym.sim.bosses import defeat_blind, drawn_to_hand, press_play, start_blind
 from balatro_gym.sim.content import CENTERS, pool
+from balatro_gym.sim.effects import Context as JokerContext
+from balatro_gym.sim.effects import ContextKind, calculate_joker
+from balatro_gym.sim.engine import _discard_cards as discard_cards
 from balatro_gym.sim.engine import _end_round as end_round
+from balatro_gym.sim.engine import _set_blind as set_blind
+from balatro_gym.sim.engine import _take as take_from_hand
 from balatro_gym.sim.engine import new_run
 from balatro_gym.sim.events import Event, HandScored
 from balatro_gym.sim.hands import display_name, evaluate_poker_hand
-from balatro_gym.sim.inventory import add_to_deck, remove_from_deck
+from balatro_gym.sim.inventory import add_to_deck, disable_blind, remove_from_deck
 from balatro_gym.sim.items import new_item, set_cost
 from balatro_gym.sim.modifiers import scoring_chips
 from balatro_gym.sim.packs import pack_kind
@@ -140,10 +146,14 @@ def set_hand(state: RunState, labels: str) -> list[PlayingCard]:
 
 
 def best_hand(state: RunState) -> tuple[int, ...]:
-    """Hand positions of the selection that scores the most with plain cards."""
+    """Hand positions of the selection that scores the most with plain cards,
+    always including a card Cerulean Bell forces."""
     best: tuple[float, tuple[int, ...]] = (-1.0, ())
+    forced = {i for i, card in enumerate(state.hand) if card.forced_selection}
     for size in range(1, 6):
         for combo in itertools.combinations(range(len(state.hand)), size):
+            if not forced <= set(combo):
+                continue
             cards = [state.hand[i] for i in combo]
             hands = evaluate_poker_hand(cards)
             assert hands.top is not None
@@ -236,6 +246,15 @@ def engine_score(scenario: dict[str, Any]) -> dict[str, Any]:
     state.jokers = list(jokers)
     state.consumables = [new_item(state, key) for key in scenario.get("consumables", [])]
     state.used_vouchers = list(scenario.get("vouchers", []))
+    blind = scenario.get("blind")
+    if blind is not None:
+        state.blind = set_blind(state, blind["key"], BlindSlot.BOSS)
+        if blind["key"] == "bl_eye":
+            state.blind.hands_used = [HandType(hand) for hand in blind.get("hands_used", [])]
+        if blind["key"] == "bl_mouth" and blind.get("only_hand"):
+            state.blind.only_hand = HandType(blind["only_hand"])
+        state.blind.disabled = blind.get("disabled", False)
+        state.most_played_hand = HandType(blind.get("most_played", "High Card"))
     scope = Scope(state)
     chips_before = state.chips
     destroyed = evaluate_play(scope, played)
@@ -934,4 +953,102 @@ def compare_shop_playing_cards(
         if mine.get("allowed"):
             keys = [{"key": key} for key in scenario["jokers"]]
             problems.extend(_compare_jokers(mine["jokers"], theirs["jokers"], keys))
+    return problems
+
+
+def engine_boss_round(scenario: dict[str, Any]) -> dict[str, Any]:
+    """Play through a boss blind's effects in the engine; report what
+    ``rules.boss_round`` does.
+
+    Random picks (The Hook's cards, Cerulean Bell's card, Crimson Heart's joker,
+    Amber Acorn's order) are reported as counts or sets, since the engine's
+    random draws differ from the game's.
+    """
+    state = new_run(scenario["seed"])
+    state.ante = scenario["ante"]
+    state.money = scenario["dollars"]
+    state.probabilities_normal = scenario["probability"]
+    state.hands_per_round, state.discards_per_round = 4, 3
+    state.hands_left, state.discards_left = 4, 3
+    state.hands_played_this_round = scenario["hands_played"]
+    state.discards_used_this_round = scenario["discards_used"]
+    state.phase = Phase.BLIND_SELECT
+    for joker in scenario["jokers"]:
+        item = new_item(state, joker["key"], edition=joker.get("edition"))
+        item.uid = joker["uid"]
+        state.jokers.append(item)
+    hand = [_scenario_card(card) for card in scenario["hand"]]
+    deck = [_scenario_card(card) for card in scenario["deck"]]
+    for card, description in zip(
+        [*hand, *deck], [*scenario["hand"], *scenario["deck"]], strict=True
+    ):
+        card.played_this_ante = description.get("played_this_ante", False)
+    state.hand, state.deck = list(hand), list(deck)
+    scope = Scope(state)
+    state.blind = set_blind(state, scenario["blind"], BlindSlot.BOSS)
+    start_blind(scope)
+    for joker in list(state.jokers):
+        calculate_joker(scope, joker, JokerContext(ContextKind.SETTING_BLIND))
+    scope.flush()
+
+    def snapshot() -> dict[str, Any]:
+        blind = state.blind
+        return {
+            "debuffed": sorted(card.uid for card in [*hand, *deck] if card.debuffed),
+            "jokers_debuffed": sorted(joker.uid for joker in state.jokers if joker.debuffed),
+            "jokers_face_down": sum(joker.face_down for joker in state.jokers),
+            "jokers": sorted(joker.uid for joker in state.jokers),
+            "hands_left": state.hands_left,
+            "discards_left": state.discards_left,
+            "hand_size": state.hand_size,
+            "chips": blind.chips if blind is not None else 0.0,
+            "disabled": blind.disabled if blind is not None else False,
+            "dollars": state.money,
+        }
+
+    # Cards the engine draws (Chicot disabling The Manacle) are left out, since
+    # the harness doesn't move cards.
+    original = {card.uid for card in hand}
+
+    def face_down() -> list[bool]:
+        return [stays_face_down(scope, card) for card in state.hand if card.uid in original]
+
+    result: dict[str, Any] = {"set": snapshot(), "face_down": face_down()}
+    state.phase = Phase.SELECTING_HAND
+    played = take_from_hand(state, [hand[i] for i in scenario["played"]])
+    # Played cards are still the player's while they score (in the game's play area).
+    state.discard.extend(played)
+    hooked = press_play(scope, played)
+    if hooked:
+        discard_cards(scope, hooked)
+    scope.flush()
+    result["played"] = {**snapshot(), "hook_discarded": len(hooked), "face_down": face_down()}
+    drawn_to_hand(scope)
+    scope.flush()
+    result["drawn"] = {
+        **snapshot(),
+        "forced": sum(card.forced_selection for card in state.hand if card.uid in original),
+    }
+    if scenario["disable"]:
+        disable_blind(scope)
+        scope.flush()
+        result["disabled"] = snapshot()
+    defeat_blind(scope)
+    result["defeated"] = snapshot()
+    return result
+
+
+def compare_boss_round(
+    scenario: dict[str, Any], ours: dict[str, Any], game: dict[str, Any]
+) -> list[str]:
+    """Differences in a boss round. Crimson Heart debuffs a random joker, so only
+    how many it debuffs is compared."""
+    problems = []
+    for step in sorted({*ours, *game}):
+        mine, theirs = ours.get(step), game.get(step)
+        if scenario["blind"] == "bl_final_heart" and step == "drawn" and mine and theirs:
+            mine = {**mine, "jokers_debuffed": len(mine["jokers_debuffed"])}
+            theirs = {**theirs, "jokers_debuffed": len(theirs["jokers_debuffed"])}
+        if mine != theirs:
+            problems.append(f"{step}: {mine} vs {theirs}")
     return problems

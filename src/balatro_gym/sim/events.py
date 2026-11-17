@@ -16,7 +16,9 @@ from .state import BlindSlot, HandSort, HandType, Phase
 __all__ = [
     "EVENT_TYPES",
     "AnteChanged",
+    "BlindDisabled",
     "BlindSelected",
+    "BlindTriggered",
     "BossChosen",
     "BossRerolled",
     "CardDestroyed",
@@ -35,6 +37,7 @@ __all__ = [
     "ItemBought",
     "ItemCreated",
     "ItemSold",
+    "JokerDebuffed",
     "JokerDestroyed",
     "JokerMoved",
     "MoneyChanged",
@@ -308,6 +311,32 @@ class ShopRerolled(Event):
 
 
 @dataclass(frozen=True, slots=True)
+class BlindTriggered(Event):
+    """The boss's effect acted, for example The Hook discarding cards or a hand
+    that The Eye does not allow."""
+
+    kind: ClassVar[str] = "blind_triggered"
+    blind: str
+
+
+@dataclass(frozen=True, slots=True)
+class BlindDisabled(Event):
+    kind: ClassVar[str] = "blind_disabled"
+    blind: str
+
+
+@dataclass(frozen=True, slots=True)
+class JokerDebuffed(Event):
+    """A joker was debuffed (``debuffed``) or recovered, losing or regaining its
+    effects."""
+
+    kind: ClassVar[str] = "joker_debuffed"
+    uid: int
+    key: str
+    debuffed: bool
+
+
+@dataclass(frozen=True, slots=True)
 class VoucherRedeemed(Event):
     kind: ClassVar[str] = "voucher_redeemed"
     uid: int
@@ -359,6 +388,9 @@ EVENT_TYPES: dict[str, type[Event]] = {
         PackPicked,
         PackSkipped,
         VoucherRedeemed,
+        BlindTriggered,
+        BlindDisabled,
+        JokerDebuffed,
     )
 }
 

@@ -1,7 +1,10 @@
 """Scoring a played hand: a step-by-step port of the game's ``evaluate_play``.
 
-1. Find the poker hand and the scoring cards.
-2. Jokers react ``before`` scoring (some level up the hand).
+1. Find the poker hand and the scoring cards. The boss may stop the hand from
+   scoring (The Psychic, The Eye, The Mouth): jokers then react to the debuffed
+   hand and steps 2 to 6 are skipped. The Arm and The Ox act here too.
+2. Jokers react ``before`` scoring (some level up the hand); The Flint halves the
+   hand's base chips and mult.
 3. Each scoring card scores from left to right, once per retrigger: its own chips,
    mult, x-mult, money and edition, then each joker's ``individual`` effect.
 4. Each card held in hand applies its effects, with retriggers.
@@ -12,7 +15,8 @@
 7. The score is added, and jokers react ``after`` scoring.
 
 Source: functions/state_events.lua ``G.FUNCS.evaluate_play``;
-functions/common_events.lua ``eval_card`` and ``level_up_hand``.
+functions/common_events.lua ``eval_card`` and ``level_up_hand``; blind.lua
+``Blind:debuff_hand`` and ``Blind:modify_hand``.
 """
 
 from __future__ import annotations
@@ -20,11 +24,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
-from .blinds import lua_floor
+from .blinds import BLINDS, lua_floor
 from .cards import STONE
 from .content import CENTERS
 from .effects import Area, Context, ContextKind, Effect, calculate_joker, find_joker
 from .events import (
+    BlindTriggered,
     CardDestroyed,
     CardRetriggered,
     EffectApplied,
@@ -126,12 +131,85 @@ def evaluate_play(scope: Scope, played: list[PlayingCard]) -> list[PlayingCard]:
         return context
 
     destroyed: list[PlayingCard] = []
+    if _blind_debuffs_hand(scope, played, hand):
+        # The hand scores nothing. Source: the debuffed branch of evaluate_play.
+        score = _RunningScore(chips=0.0, mult=0.0)
+        for joker in list(state.jokers):
+            calculate_joker(scope, joker, make_context(ContextKind.DEBUFFED_HAND))
+    else:
+        score = _score_hand(scope, hand, played, scoring, destroyed, make_context)
+
+    total = lua_floor(score.chips * score.mult)
+    state.chips += total
+    scope.emit(
+        HandScored(hand=hand, chips=score.chips, mult=score.mult, score=total, total=state.chips)
+    )
+    scope.flush()
+    for joker in list(state.jokers):
+        calculate_joker(scope, joker, make_context(ContextKind.AFTER))
+    scope.flush()
+    return destroyed
+
+
+def _blind_debuffs_hand(scope: Scope, played: list[PlayingCard], hand: HandType) -> bool:
+    """Whether the boss stops the hand from scoring; also The Arm's and The Ox's
+    effects, which apply to a hand that does score.
+
+    The Psychic needs 5 cards, The Eye allows each hand once, and The Mouth only
+    the first hand played. Source: blind.lua ``Blind:debuff_hand``.
+    """
+    state = scope.state
+    blind = state.blind
+    if blind is None or blind.disabled:
+        return False
+    key = blind.key
+    minimum = BLINDS[key].debuff.get("h_size_ge")
+    debuffed = False
+    if isinstance(minimum, int) and len(played) < minimum:
+        debuffed = True
+    elif key == "bl_eye":
+        debuffed = hand in blind.hands_used
+        if not debuffed:
+            blind.hands_used.append(hand)
+    elif key == "bl_mouth":
+        debuffed = blind.only_hand is not None and blind.only_hand is not hand
+        if not debuffed:
+            blind.only_hand = hand
+    if debuffed:
+        scope.emit(BlindTriggered(key))
+        return True
+    if key == "bl_arm" and state.hands[hand].level > 1:
+        scope.emit(BlindTriggered(key))
+        level_up_hand(scope, hand, -1)
+    if key == "bl_ox" and hand is state.most_played_hand:
+        scope.emit(BlindTriggered(key))
+        scope.change_money(-state.money, "ox")
+    return False
+
+
+def _score_hand(
+    scope: Scope,
+    hand: HandType,
+    played: list[PlayingCard],
+    scoring: list[PlayingCard],
+    destroyed: list[PlayingCard],
+    make_context: _ContextFactory,
+) -> _RunningScore:
+    """Score a hand the blind allows; destroyed cards are added to ``destroyed``."""
+    state = scope.state
     for joker in list(state.jokers):
         effect = calculate_joker(scope, joker, make_context(ContextKind.BEFORE))
         if effect is not None and effect.level_up:
             level_up_hand(scope, hand, effect.level_up)
 
+    level = state.hands[hand]
     score = _RunningScore(chips=float(level.chips), mult=float(level.mult))
+    blind = state.blind
+    if blind is not None and blind.key == "bl_flint" and not blind.disabled:
+        # Source: blind.lua Blind:modify_hand.
+        scope.emit(BlindTriggered(blind.key))
+        score.mult = max(lua_floor(score.mult * 0.5 + 0.5), 1)
+        score.chips = max(lua_floor(score.chips * 0.5 + 0.5), 0)
     for card in scoring:
         if not card.debuffed:
             _score_played_card(scope, card, score, make_context)
@@ -163,17 +241,7 @@ def evaluate_play(scope: Scope, played: list[PlayingCard]) -> list[PlayingCard]:
     for card in destroyed:
         reason = "shattered" if card.enhancement == GLASS else "destroyed"
         scope.emit(CardDestroyed(card.uid, reason))
-
-    total = lua_floor(score.chips * score.mult)
-    state.chips += total
-    scope.emit(
-        HandScored(hand=hand, chips=score.chips, mult=score.mult, score=total, total=state.chips)
-    )
-    scope.flush()
-    for joker in list(state.jokers):
-        calculate_joker(scope, joker, make_context(ContextKind.AFTER))
-    scope.flush()
-    return destroyed
+    return score
 
 
 def _score_played_card(

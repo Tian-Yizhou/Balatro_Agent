@@ -44,11 +44,12 @@ def redeem(game: Game, key: str) -> list[object]:
 
 
 def beat_blind(game: Game) -> None:
-    """Select the blind on deck and win it with one card."""
+    """Select the blind on deck and win it with one card, even if a boss stops
+    that hand from scoring."""
     state = game.state
     game.step(SelectBlind())
     assert state.blind is not None
-    state.blind.chips = 1
+    state.blind.chips = 0
     for action in macros.play_cards(state, [0]):
         game.step(action)
 
