@@ -106,7 +106,11 @@ class BlindStatus(StrEnum):
 
 @dataclass(slots=True)
 class PlayingCard:
-    """One playing card. ``uid`` is unique within a run and never reused."""
+    """One playing card. ``uid`` is unique within a run and never reused.
+
+    ``face_down`` marks a card in hand that a boss dealt face down, so the player
+    can't see it; ``forced_selection`` marks the card Cerulean Bell keeps selected.
+    """
 
     uid: int
     rank: int
@@ -120,6 +124,8 @@ class PlayingCard:
     times_played: int = 0
     played_this_ante: bool = False
     discarded: bool = False
+    face_down: bool = False
+    forced_selection: bool = False
 
     @property
     def label(self) -> str:
@@ -150,6 +156,8 @@ class Item:
     sell_value: int = 0
     values: dict[str, Scalar] = field(default_factory=dict[str, Scalar])
     playing_card: PlayingCard | None = None
+    #: A joker turned face down by Amber Acorn.
+    face_down: bool = False
 
 
 @dataclass(slots=True)
@@ -194,7 +202,16 @@ class HandLevel:
 
 @dataclass(slots=True)
 class BlindState:
-    """The blind being played (``G.GAME.blind``). ``chips`` is the score target."""
+    """The blind being played (``G.GAME.blind``). ``chips`` is the score target.
+
+    Attributes:
+        disabled: Whether the boss's effect is turned off (Chicot).
+        hands_used: The hands played so far, for The Eye.
+        only_hand: The one hand The Mouth allows, once the first is played.
+        prepped: Set when a hand is played, for The Fish and Crimson Heart.
+        discards_taken: The discards The Water took away.
+        hands_taken: The hands The Needle took away.
+    """
 
     key: str
     slot: BlindSlot
@@ -202,6 +219,11 @@ class BlindState:
     mult: float
     dollars: int
     disabled: bool = False
+    hands_used: list[HandType] = field(default_factory=list[HandType])
+    only_hand: HandType | None = None
+    prepped: bool = True
+    discards_taken: int = 0
+    hands_taken: int = 0
 
 
 @dataclass(slots=True)
@@ -246,6 +268,8 @@ class RunState:
     chips: float
     hands: dict[HandType, HandLevel]
     last_hand_played: HandType | None
+    #: The most played hand when the last boss was beaten, for The Ox.
+    most_played_hand: HandType
     # Per-round allowances and what is left of them (G.GAME.round_resets and
     # G.GAME.current_round).
     hands_per_round: int

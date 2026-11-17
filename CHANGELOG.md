@@ -52,9 +52,17 @@ Notable changes to this project. The format follows
 - The `reroll_boss` action at blind selection, with Director's Cut or Retcon
   (ADR 0004).
 - `VoucherRedeemed` and `BossRerolled` events.
+- The effects of all 28 boss blinds: debuffed suits and cards, hands that don't
+  score, The Hook, The Tooth, The Arm, The Ox, The Flint, The Water, The Needle,
+  The Manacle, The Serpent, cards and jokers dealt face down (ADR 0006), and the
+  five showdown bosses.
+- The legendary joker Chicot, which disables boss blinds.
+- `BlindTriggered`, `BlindDisabled` and `JokerDebuffed` events.
 
 ### Changed
 
+- A debuffed joker, including a perishable joker that has worn out, loses its
+  lasting effects (such as Juggler's hand size) until the debuff ends.
 - Restructure the repository for v2: a `src/` layout with the `sim`, `replay`, `env`
   and `serve` subpackages, managed with uv.
 

@@ -13,7 +13,12 @@ from .content import CENTERS, pool
 from .effects import SUIT_NAMES, Context, ContextKind, calculate_joker
 from .effects import Area as ContextArea
 from .events import CardDestroyed
-from .inventory import add_playing_cards, change_hand_size, destroy_jokers
+from .inventory import (
+    add_playing_cards,
+    change_hand_size,
+    destroy_jokers,
+    refresh_card_debuffs,
+)
 from .items import copy_item, copy_playing_card, new_playing_card, set_cost
 from .scope import Scope
 from .scoring import level_up_hand
@@ -134,9 +139,12 @@ def use(scope: Scope, item: Item) -> None:
         level_up_hand(scope, HandType(config["hand_type"]))
     elif "mod_conv" in config:
         _convert(state, key, str(config["mod_conv"]), selected)
+        # A boss's debuff is re-checked on every card that changed.
+        refresh_card_debuffs(state, selected[:-1] if key == "c_death" else selected)
     elif "suit_conv" in config:
         for card in selected:
             card.suit = SUIT_NAMES[str(config["suit_conv"])]
+        refresh_card_debuffs(state, selected)
     elif key == "c_hanged_man":
         _destroy_hand_cards(scope, list(reversed(selected)), "hanged_man")
     elif key == "c_hermit":
@@ -199,16 +207,19 @@ def _use_spectral(scope: Scope, item: Item, selected: list[PlayingCard]) -> None
         selected[0].edition = poll_edition(scope, "aura", no_negative=True, guaranteed=True)
     elif key == "c_cryptid":
         copies = [copy_playing_card(state, selected[0]) for _ in range(int(config["extra"]))]
+        refresh_card_debuffs(state, copies)
         state.hand.extend(copies)
         add_playing_cards(scope, copies, "hand")
     elif key == "c_sigil":
         suit = scope.rng.choice("sigil", _SUIT_ORDER)
         for card in state.hand:
             card.suit = suit
+        refresh_card_debuffs(state, state.hand)
     elif key == "c_ouija":
         rank = scope.rng.choice("ouija", range(2, 15))
         for card in state.hand:
             card.rank = rank
+        refresh_card_debuffs(state, state.hand)
         change_hand_size(scope, -1)
     elif key in _CARD_CREATORS:
         _destroy_and_create(scope, key, int(config["extra"]))

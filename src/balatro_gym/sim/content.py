@@ -17,6 +17,7 @@ from types import MappingProxyType
 from typing import Any
 
 __all__ = [
+    "BLIND_DATA",
     "CENTERS",
     "Center",
     "center",
@@ -95,6 +96,10 @@ def _center(key: str, raw: Mapping[str, Any]) -> Center:
 CENTERS: Mapping[str, Center] = MappingProxyType(
     {key: _center(key, raw) for key, raw in _DATA["centers"].items()}
 )
+
+
+#: Every blind by key (``G.P_BLINDS``), for example its boss ``debuff`` rule.
+BLIND_DATA: Mapping[str, Mapping[str, Any]] = _freeze(_DATA["blinds"])
 
 
 def center(key: str) -> Center:

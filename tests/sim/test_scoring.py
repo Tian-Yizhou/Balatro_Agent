@@ -322,7 +322,8 @@ class TestJokers:
 def test_every_registered_joker_has_a_scenario() -> None:
     here = Path(__file__).parent
     source = "".join(
-        (here / name).read_text("utf-8") for name in ("test_scoring.py", "test_shop.py")
+        (here / name).read_text("utf-8")
+        for name in ("test_scoring.py", "test_shop.py", "test_bosses.py")
     )
     assert [key for key in JOKERS if f'"{key}"' not in source] == []
 

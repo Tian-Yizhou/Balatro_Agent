@@ -12,8 +12,8 @@ Implemented so far: a run starts at blind selection; a round is played with
 toggle, move, sort, play and discard and scored with jokers and card modifiers;
 the round is evaluated and cashed out; the shop sells jokers, consumables,
 playing cards, vouchers and booster packs, which open into the pack phase; the
-boss of each ante is chosen by the game's rule (without its effect) and can be
-rerolled with a voucher; and the run is won after the boss of ante 8, with the
+boss of each ante is chosen by the game's rule, can be rerolled with a voucher,
+and applies its effect; and the run is won after the boss of ante 8, with the
 choice to continue in endless mode.
 """
 
@@ -49,6 +49,14 @@ from .actions import (
     UseConsumable,
 )
 from .blinds import BLINDS, choose_boss, get_blind_amount
+from .bosses import (
+    defeat_blind,
+    draw_count,
+    drawn_to_hand,
+    most_played_hand,
+    press_play,
+    start_blind,
+)
 from .cards import sort_key
 from .consumables import can_use, consumable_room, joker_room, use
 from .content import CENTERS
@@ -80,8 +88,10 @@ from .inventory import (
     add_playing_cards,
     add_to_deck,
     calculate_reroll_cost,
+    disable_blind,
     draw_cards,
     remove_from_deck,
+    set_joker_debuff,
 )
 from .items import new_item
 from .jokers import DOLLAR_BONUS
@@ -97,6 +107,7 @@ from .state import (
     BlindState,
     BlindStatus,
     HandSort,
+    HandType,
     Item,
     Payout,
     Phase,
@@ -192,6 +203,7 @@ def new_run(seed: str | int, config: RunConfig | None = None) -> RunState:
         chips=0.0,
         hands=initial_hand_levels(),
         last_hand_played=None,
+        most_played_hand=HandType.HIGH_CARD,
         hands_per_round=params["hands"],
         discards_per_round=params["discards"],
         hand_size=params["hand_size"],
@@ -339,7 +351,7 @@ def _hand_actions(state: RunState, actions: list[Action]) -> None:
     """Selecting and moving cards in hand, wherever the hand is shown."""
     selected = _count_selected(state)
     for i, card in enumerate(state.hand):
-        if card.selected or selected < SELECTION_LIMIT:
+        if _can_toggle(card, selected):
             actions.append(ToggleCard(i))
     size = len(state.hand)
     actions.extend(
@@ -371,10 +383,19 @@ def _hand_shown(state: RunState) -> bool:
     )
 
 
+def _can_toggle(card: PlayingCard, selected: int) -> bool:
+    """A selected card can be deselected unless Cerulean Bell forces it; a card can
+    be selected while fewer than five are. Source: cardarea.lua
+    ``CardArea:remove_from_highlighted``."""
+    if card.selected:
+        return not card.forced_selection
+    return selected < SELECTION_LIMIT
+
+
 def _check_toggle(state: RunState, action: ToggleCard) -> bool:
     if not _hand_shown(state) or not 0 <= action.index < len(state.hand):
         return False
-    return state.hand[action.index].selected or _count_selected(state) < SELECTION_LIMIT
+    return _can_toggle(state.hand[action.index], _count_selected(state))
 
 
 def _check_play(state: RunState, _: Play) -> bool:
@@ -536,13 +557,30 @@ def step(state: RunState, action: Action) -> list[Event]:
 def determinize(state: RunState, seed: str | int) -> RunState:
     """Copy ``state``, re-randomizing everything the player cannot see.
 
-    The copy keeps all visible information but shuffles the draw pile and uses a
-    fresh random seed, so a planning agent that searches it learns nothing about
-    the real run's future.
+    The copy keeps all visible information but shuffles the draw pile, deals the
+    face-down cards in hand again from the unseen cards, shuffles the jokers that
+    are face down, and uses a fresh random seed, so a planning agent that searches
+    it learns nothing about the real run's future.
     """
     copy = clone(state)
     copy.rng = Rng(f"determinize:{seed}")
-    _shuffle(copy, "determinize")
+    slots = [i for i, card in enumerate(copy.hand) if card.face_down]
+    unseen = [*copy.deck, *(copy.hand[i] for i in slots)]
+    unseen.sort(key=lambda card: card.uid)
+    copy.rng.shuffle("determinize", unseen)
+    for i in slots:
+        old = copy.hand[i]
+        new = unseen.pop()
+        new.face_down, new.selected, new.forced_selection = True, old.selected, old.forced_selection
+        copy.hand[i] = new
+    for card in unseen:
+        card.face_down = card.selected = card.forced_selection = False
+    copy.deck = unseen
+    hidden_jokers = [i for i, joker in enumerate(copy.jokers) if joker.face_down]
+    order = [copy.jokers[i] for i in hidden_jokers]
+    copy.rng.shuffle("determinize_jokers", order)
+    for i, joker in zip(hidden_jokers, order, strict=True):
+        copy.jokers[i] = joker
     return copy
 
 
@@ -625,10 +663,12 @@ def _new_round(scope: Scope, slot: BlindSlot) -> None:
     calculate_reroll_cost(scope, skip_increment=True)
     blind = _set_blind(state, state.blind_choices[slot], slot)
     scope.emit(BlindSelected(slot, blind.key, blind.chips))
+    start_blind(scope)
     for joker in list(state.jokers):
         calculate_joker(scope, joker, Context(ContextKind.SETTING_BLIND))
+    # The shuffle is queued after the jokers' reactions, as in the game.
+    scope.defer(lambda: _shuffle(state, f"nr{state.ante}"))
     scope.flush()
-    _shuffle(state, f"nr{state.ante}")
     _draw_to_hand(scope)
 
 
@@ -651,12 +691,14 @@ def _draw_to_hand(scope: Scope) -> None:
     if state.hand_size <= 0 and not state.hand:
         _game_over(scope)
         return
-    draw_cards(scope, state.hand_size - len(state.hand))
+    draw_cards(scope, draw_count(state))
     if state.hands_played_this_round == 0 and state.discards_used_this_round == 0:
         for joker in list(state.jokers):
             calculate_joker(scope, joker, Context(ContextKind.FIRST_HAND_DRAWN))
         scope.flush()
     scope.set_phase(Phase.SELECTING_HAND)
+    drawn_to_hand(scope)
+    scope.flush()
     if not state.hand and not state.deck:
         _end_round(scope)
 
@@ -671,6 +713,9 @@ def _play(scope: Scope, _: Play) -> None:
     for card in played:
         card.times_played += 1
         card.played_this_ante = True
+    hooked = press_play(scope, played)
+    if hooked:
+        _discard_cards(scope, hooked)
     destroyed = evaluate_play(scope, played)
     state.discard.extend(card for card in played if card not in destroyed)
     state.hands_played += 1
@@ -683,18 +728,39 @@ def _play(scope: Scope, _: Play) -> None:
 
 
 def _take_selected(state: RunState) -> list[PlayingCard]:
-    """Remove the selected cards from the hand, keeping their left-to-right order."""
-    taken = [card for card in state.hand if card.selected]
-    state.hand = [card for card in state.hand if not card.selected]
-    for card in taken:
+    """Remove the selected cards from the hand, keeping their left-to-right order.
+
+    Playing or discarding ends Cerulean Bell's forced selection.
+    """
+    for card in state.playing_cards():
+        card.forced_selection = False
+    return _take(state, [card for card in state.hand if card.selected])
+
+
+def _take(state: RunState, cards: list[PlayingCard]) -> list[PlayingCard]:
+    """Remove ``cards`` from the hand; they leave it face up and unselected."""
+    leaving = {id(card) for card in cards}
+    state.hand = [card for card in state.hand if id(card) not in leaving]
+    for card in cards:
         card.selected = False
-    return taken
+        card.face_down = False
+    return cards
 
 
 def _discard(scope: Scope, _: Discard) -> None:
-    """Source: functions/state_events.lua ``G.FUNCS.discard_cards_from_highlighted``."""
     state = scope.state
-    cards = _take_selected(state)
+    _discard_cards(scope, _take_selected(state))
+    state.discards_left -= 1
+    state.discards_used_this_round += 1
+    _draw_to_hand(scope)
+
+
+def _discard_cards(scope: Scope, cards: list[PlayingCard]) -> None:
+    """Discard ``cards`` from the hand: by the player, or by The Hook, which uses
+    no discard. Source: functions/state_events.lua
+    ``G.FUNCS.discard_cards_from_highlighted``."""
+    state = scope.state
+    _take(state, cards)
     for joker in list(state.jokers):
         calculate_joker(scope, joker, Context(ContextKind.PRE_DISCARD, full_hand=cards))
     destroyed: list[PlayingCard] = []
@@ -723,9 +789,6 @@ def _discard(scope: Scope, _: Discard) -> None:
                 Context(ContextKind.REMOVE_PLAYING_CARDS, Area.JOKERS, removed=destroyed),
             )
     scope.flush()
-    state.discards_left -= 1
-    state.discards_used_this_round += 1
-    _draw_to_hand(scope)
 
 
 def _purple_seal(scope: Scope, card: PlayingCard) -> None:
@@ -759,7 +822,7 @@ def _apply_stickers(scope: Scope, joker: Item) -> None:
     if joker.perishable and joker.perish_tally > 0:
         joker.perish_tally -= 1
         if joker.perish_tally == 0:
-            joker.debuffed = True
+            set_joker_debuff(scope, joker, True)
 
 
 def _end_round(scope: Scope) -> None:
@@ -783,14 +846,15 @@ def _end_round(scope: Scope) -> None:
         return
     game_won = state.ante == state.win_ante and blind.slot is BlindSlot.BOSS
     state.unused_discards += state.discards_left
+    if BLINDS[blind.key].boss:
+        state.most_played_hand = most_played_hand(state)
     for card in list(state.hand):
         _end_of_round_held_card(scope, card)
     scope.flush()
 
-    for card in state.hand:
-        card.selected = False
-    state.discard.extend(state.hand)
-    state.hand.clear()
+    for card in state.playing_cards():
+        card.forced_selection = False
+    state.discard.extend(_take(state, list(state.hand)))
     if blind.slot is BlindSlot.BOSS:
         state.ante += 1
         scope.emit(AnteChanged(state.ante))
@@ -805,6 +869,7 @@ def _end_round(scope: Scope) -> None:
         if blind.slot is BlindSlot.BOSS:
             card.played_this_ante = False
     state.payouts = _evaluate_round(scope, beaten)
+    defeat_blind(scope)
 
     if game_won and not state.won:
         state.won = True
@@ -998,8 +1063,14 @@ def _buy_and_use(scope: Scope, action: BuyAndUse) -> None:
 
 def _use_consumable(scope: Scope, action: UseConsumable) -> None:
     """Source: functions/button_callbacks.lua ``G.FUNCS.use_card``."""
-    item = scope.state.consumables.pop(action.index)
+    state = scope.state
+    item = state.consumables.pop(action.index)
     _use(scope, item)
+    # A boss disabled mid-round (Chicot from The Soul) may lower the target below
+    # the score, which ends the round. Source: blind.lua Blind:disable.
+    blind = state.blind
+    if state.phase is Phase.SELECTING_HAND and blind is not None and state.chips >= blind.chips:
+        _end_round(scope)
 
 
 def _use(scope: Scope, item: Item) -> None:
@@ -1081,6 +1152,11 @@ def _sell(scope: Scope, area: list[Item], index: int) -> None:
     area.remove(item)
     remove_from_deck(scope, item)
     scope.emit(ItemSold(item.uid, item.key, item.sell_value))
+    # Selling a joker disables Verdant Leaf.
+    blind = state.blind
+    verdant_leaf = blind is not None and blind.key == "bl_final_leaf" and not blind.disabled
+    if verdant_leaf and CENTERS[item.key].is_joker:
+        disable_blind(scope)
     scope.flush()
 
 

@@ -76,11 +76,13 @@ function Area:remove_card(card)
   return card
 end
 function Area:unhighlight_all() self.highlighted = {} end
+function Area:add_to_highlighted(card) table.insert(self.highlighted, card) end
+-- The game's own shuffle (CardArea:shuffle), without the layout update.
+function Area:shuffle(seed) pseudoshuffle(self.cards, pseudoseed(seed or 'shuffle')) end
 function Area:change_size(delta) self.config.card_limit = self.config.card_limit + delta end
 function Area:sort() end
 function Area:set_ranks() end
 function Area:align_cards() end
-function Area:shuffle() end
 
 G = G or {}
 G.E_MANAGER = {}
@@ -99,7 +101,7 @@ G.STATES = {SELECTING_HAND = 1, HAND_PLAYED = 2, DRAW_TO_HAND = 3, SHOP = 5, PLA
 G.STAGES = {RUN = 1}
 G.CARD_W, G.CARD_H = 1, 1.4
 G.I = {CARD = {}}
-G.ARGS = {}
+G.ARGS = {spin = {}}
 G.STAGE = G.STAGES.RUN
 G.SPEEDFACTOR = 1
 
@@ -131,6 +133,7 @@ function harness_card(spec)
   card.children = setmetatable({}, {__index = function() return harness.anything end})
   card.states = {visible = true, drag = {is = false}, collide = {}, hover = {}, click = {}, focus = {}}
   card.ID, card.sort_id = spec.id, spec.id
+  card.facing = "front"
   card.unique_val = 1 - spec.id / 1603301
   card.base_cost, card.extra_cost, card.cost, card.sell_cost = 0, 0, 0, 0
   card:set_ability(G.P_CENTERS[spec.center], true)
@@ -215,7 +218,7 @@ function Card:set_sprites()
   self.children.center = self.children.center or harness.anything
   self.children.back = self.children.back or harness.anything
 end
-for _, name in ipairs({"juice_up", "update_alert", "start_materialize", "flip", "hard_set_T",
+for _, name in ipairs({"juice_up", "update_alert", "start_materialize", "hard_set_T",
   "calculate_parrallax", "highlight", "set_card_area", "explode"}) do
   Card[name] = harness.noop
 end
@@ -266,7 +269,7 @@ G.UIT = harness.anything
 function UIBox() return harness.anything end
 function DynaText() return harness.anything end
 -- The room's size is read when a booster pack's cards are laid out.
-G.ROOM = setmetatable({T = {x = 0, y = 0, w = 20, h = 11.5}},
+G.ROOM = setmetatable({T = {x = 0, y = 0, w = 20, h = 11.5}, jiggle = 0},
   {__index = function() return harness.anything end})
 G.CONTROLLER = setmetatable({locked = false, locks = {}, interrupt = {}},
   {__index = function() return harness.anything end})
@@ -285,4 +288,35 @@ function ease_ante(mod)
     G.GAME.round_resets.ante = G.GAME.round_resets.ante + mod
     return true
   end}))
+end
+
+-- Turning a card over keeps only which side faces up (Card:flip without the
+-- animation).
+function Card:flip()
+  if self.facing == "back" then
+    self.ability.wheel_flipped = nil
+    self.facing = "front"
+  else
+    self.facing = "back"
+  end
+end
+
+Particles = function() return harness.anything end
+
+-- The blind being played, built from the game's Blind class with its sprite,
+-- colours and banners absorbed, and set to ``key``.
+function harness_set_blind(key)
+  -- Blinds know their keys, as Game:init_item_prototypes sets them.
+  for blind_key, prototype in pairs(G.P_BLINDS) do prototype.key = blind_key end
+  local blind = setmetatable({
+    children = setmetatable({}, {__index = function() return harness.anything end}),
+    config = {}, T = {x = 0, y = 0, w = 1, h = 1, r = 0}, VT = {x = 0, y = 0, w = 1, h = 1, r = 0},
+    states = {visible = true, collide = {}, hover = {}, drag = {}, click = {}, focus = {}},
+  }, Blind)
+  for _, name in ipairs({"change_colour", "alert_debuff", "set_text", "wiggle", "juice_up"}) do
+    blind[name] = harness.noop
+  end
+  G.GAME.blind = blind
+  blind:set_blind(G.P_BLINDS[key])
+  return blind
 end

@@ -11,7 +11,9 @@ from balatro_gym.sim import Event, Phase, RunState
 from balatro_gym.sim.blinds import BLINDS
 from balatro_gym.sim.events import (
     AnteChanged,
+    BlindDisabled,
     BlindSelected,
+    BlindTriggered,
     BossChosen,
     BossRerolled,
     CardDestroyed,
@@ -29,6 +31,7 @@ from balatro_gym.sim.events import (
     ItemBought,
     ItemCreated,
     ItemSold,
+    JokerDebuffed,
     JokerDestroyed,
     JokerMoved,
     MoneyChanged,
@@ -63,7 +66,7 @@ def render_state(state: RunState) -> str:
     if state.hand:
         lines.append("Hand    " + " ".join(_card(card) for card in state.hand))
     if state.jokers:
-        lines.append("Jokers  " + " ".join(joker.key for joker in state.jokers))
+        lines.append("Jokers  " + " ".join(_joker(joker) for joker in state.jokers))
     if state.consumables:
         lines.append("Items   " + " ".join(item.key for item in state.consumables))
     if state.used_vouchers:
@@ -172,10 +175,19 @@ def _offer(item: Item) -> str:
     return f"{card.label} ({', '.join(modifiers)})" if modifiers else card.label
 
 
+def _joker(joker: Item) -> str:
+    """A joker's key; ``!`` marks a debuffed joker and ``~`` one face down."""
+    return joker.key + ("!" if joker.debuffed else "") + ("~" if joker.face_down else "")
+
+
 def _card(card: PlayingCard) -> str:
+    """A card's label; ``!`` marks a debuffed card and ``~`` one face down, which
+    the player can't see."""
     text = card.label
     if card.debuffed:
         text += "!"
+    if card.face_down:
+        text += "~"
     return f"[{text}]" if card.selected else text
 
 
@@ -282,6 +294,11 @@ _FORMATTERS: dict[type[Event], Callable[[Any, dict[int, str]], str]] = {
         f"{labels.get(event.uid, event.key)} appeared in {event.area}"
     ),
     VoucherRedeemed: lambda event, _: f"Redeemed {event.key} for ${event.cost}",
+    BlindTriggered: lambda event, _: f"{BLINDS[event.blind].name} acts",
+    BlindDisabled: lambda event, _: f"{BLINDS[event.blind].name} is disabled",
+    JokerDebuffed: lambda event, _: (
+        f"{event.key} {'is debuffed' if event.debuffed else 'is no longer debuffed'}"
+    ),
     ConsumableUsed: lambda event, labels: (
         f"Used {event.key}" + (f" on {_names(event.targets, labels)}" if event.targets else "")
     ),

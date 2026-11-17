@@ -24,6 +24,7 @@ from balatro_gym.sim.actions import (
     ToggleCard,
     UseConsumable,
 )
+from balatro_gym.sim.blinds import BLINDS
 from balatro_gym.sim.consumables import IMPLEMENTED as CONSUMABLES
 from balatro_gym.sim.content import CENTERS
 from balatro_gym.sim.effects import JOKERS
@@ -31,7 +32,7 @@ from balatro_gym.sim.engine import SELECTION_LIMIT
 from balatro_gym.sim.events import CardDestroyed, PlayingCardCreated
 from balatro_gym.sim.items import new_item
 from balatro_gym.sim.scope import Scope
-from balatro_gym.sim.state import RunState
+from balatro_gym.sim.state import BlindSlot, RunState
 from balatro_gym.sim.vouchers import IMPLEMENTED as VOUCHERS
 from balatro_gym.sim.vouchers import apply_to_run
 from scenarios import Policy, greedy_policy, play_game, random_policy
@@ -76,8 +77,10 @@ def check_invariants(game: Game, uids: set[int]) -> None:
 
 def equip(game: Game, randomizer: random.Random) -> None:
     """Give the player random implemented jokers, consumables, vouchers and card
-    modifiers."""
+    modifiers, and a random boss (showdown bosses included) for the first ante."""
     state = game.state
+    bosses = sorted(key for key, info in BLINDS.items() if info.boss)
+    state.blind_choices[BlindSlot.BOSS] = randomizer.choice(bosses)
     for key in randomizer.sample(sorted(VOUCHERS), 8):
         for voucher in (*CENTERS[key].raw.get("requires", ()), key):
             if voucher not in state.used_vouchers:
@@ -104,8 +107,8 @@ ENHANCEMENTS = ["m_bonus", "m_mult", "m_wild", "m_glass", "m_steel", "m_stone", 
     [
         (random_policy, range(25), False),
         (greedy_policy, range(8), False),
-        (greedy_policy, range(15), True),
-        (random_policy, range(15), True),
+        (greedy_policy, range(30), True),
+        (random_policy, range(30), True),
     ],
     ids=["random", "greedy", "greedy-jokers", "random-jokers"],
 )

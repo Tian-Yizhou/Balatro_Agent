@@ -15,6 +15,7 @@ import json
 import sys
 from pathlib import Path
 
+from boss_scenarios import random_boss_round_scenarios, random_boss_scoring_scenarios
 from consumable_scenarios import (
     random_consumable_scenarios,
     random_pack_scenarios,
@@ -30,6 +31,7 @@ from harness import (
 )
 from rules import (
     LuaRules,
+    boss_round,
     discard,
     end_of_round,
     open_pack,
@@ -51,6 +53,7 @@ from voucher_scenarios import (
     random_shop_playing_card_scenarios,
 )
 
+from balatro_gym.sim.blinds import BLINDS
 from balatro_gym.sim.consumables import IMPLEMENTED as CONSUMABLES
 from balatro_gym.sim.content import pool
 from balatro_gym.sim.effects import JOKERS
@@ -152,6 +155,17 @@ def main() -> int:
     payload["shop_playing_cards"] = [
         {"scenario": scenario, "expected": shop_playing_cards(rules, scenario)}
         for scenario in random_shop_playing_card_scenarios(20261111, 12, VERIFIED_JOKERS)
+    ]
+    bosses = sorted(key for key, info in BLINDS.items() if info.boss)
+    payload["boss_round"] = [
+        {"scenario": scenario, "expected": boss_round(rules, scenario)}
+        for scenario in random_boss_round_scenarios(20261111, 150, bosses, VERIFIED_JOKERS)
+    ]
+    payload["boss_scoring"] = [
+        {"scenario": scenario, "expected": score(rules, scenario)}
+        for scenario in random_boss_scoring_scenarios(
+            20261111, 120, VERIFIED_JOKERS, VERIFIED_SEALS
+        )
     ]
     _write("lua_rules.json.gz", payload)
     return 0
