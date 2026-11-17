@@ -29,6 +29,7 @@ __all__ = [
     "Play",
     "RedeemVoucher",
     "Reroll",
+    "RerollBoss",
     "SelectBlind",
     "SellConsumable",
     "SellJoker",
@@ -117,6 +118,13 @@ class SelectBlind(Action):
 @dataclass(frozen=True, slots=True)
 class SkipBlind(Action):
     name: ClassVar[str] = "skip_blind"
+
+
+@dataclass(frozen=True, slots=True)
+class RerollBoss(Action):
+    """Pay to replace the ante's boss blind (Director's Cut, Retcon; ADR 0004)."""
+
+    name: ClassVar[str] = "reroll_boss"
 
 
 # Playing a round.
@@ -228,6 +236,7 @@ ACTION_TYPES: dict[str, type[Action]] = {
         UseConsumable,
         SelectBlind,
         SkipBlind,
+        RerollBoss,
         Play,
         Discard,
         SortByRank,

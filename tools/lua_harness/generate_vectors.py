@@ -28,11 +28,27 @@ from harness import (
     parse_cards,
     random_hand_cases,
 )
-from rules import LuaRules, discard, end_of_round, open_pack, score, shop, use_consumable
+from rules import (
+    LuaRules,
+    discard,
+    end_of_round,
+    open_pack,
+    redeem_voucher,
+    reroll_boss,
+    score,
+    shop,
+    shop_playing_cards,
+    use_consumable,
+)
 from scoring_scenarios import (
     random_discard_scenarios,
     random_round_end_scenarios,
     random_scoring_scenarios,
+)
+from voucher_scenarios import (
+    random_boss_reroll_scenarios,
+    random_redeem_scenarios,
+    random_shop_playing_card_scenarios,
 )
 
 from balatro_gym.sim.consumables import IMPLEMENTED as CONSUMABLES
@@ -121,6 +137,21 @@ def main() -> int:
     payload["pack"] = [
         {"scenario": scenario, "expected": open_pack(rules, scenario)}
         for scenario in random_pack_scenarios(20261111, 96, packs, VERIFIED_JOKERS)
+    ]
+    requires = {center.key: list(center.raw.get("requires", ())) for center in pool("Voucher")}
+    payload["voucher"] = [
+        {"scenario": scenario, "expected": redeem_voucher(rules, scenario)}
+        for scenario in random_redeem_scenarios(
+            20261111, 128, requires, sorted(JOKERS), consumables, packs
+        )
+    ]
+    payload["boss_reroll"] = [
+        {"scenario": scenario, "expected": reroll_boss(rules, scenario)}
+        for scenario in random_boss_reroll_scenarios(20261111, 80)
+    ]
+    payload["shop_playing_cards"] = [
+        {"scenario": scenario, "expected": shop_playing_cards(rules, scenario)}
+        for scenario in random_shop_playing_card_scenarios(20261111, 12, VERIFIED_JOKERS)
     ]
     _write("lua_rules.json.gz", payload)
     return 0

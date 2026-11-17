@@ -18,6 +18,7 @@ from .rng import Rng
 __all__ = [
     "BLINDS",
     "BlindInfo",
+    "boss_candidates",
     "choose_boss",
     "get_blind_amount",
     "lua_floor",
@@ -131,7 +132,19 @@ def choose_boss(
     bosses_used: dict[str, int],
     banned: frozenset[str] = frozenset(),
 ) -> str:
-    """Pick the boss blind for ``ante`` and count it in ``bosses_used``.
+    """Pick the boss blind for ``ante`` and count it in ``bosses_used``."""
+    boss = rng.choice("boss", boss_candidates(ante, win_ante, bosses_used, banned))
+    bosses_used[boss] = bosses_used.get(boss, 0) + 1
+    return boss
+
+
+def boss_candidates(
+    ante: int,
+    win_ante: int,
+    bosses_used: Mapping[str, int],
+    banned: frozenset[str] = frozenset(),
+) -> list[str]:
+    """The bosses that can be picked for ``ante``, sorted by key.
 
     Showdown bosses appear only in antes that are multiples of ``win_ante``.
     Among the eligible bosses, only those used the fewest times so far can be
@@ -151,10 +164,7 @@ def choose_boss(
         if is_eligible:
             eligible[info.key] = bosses_used.get(info.key, 0)
     fewest = min(eligible.values())
-    candidates = sorted(key for key, uses in eligible.items() if uses <= fewest)
-    boss = rng.choice("boss", candidates)
-    bosses_used[boss] = bosses_used.get(boss, 0) + 1
-    return boss
+    return sorted(key for key, uses in eligible.items() if uses <= fewest)
 
 
 def _lua_log10(number: float) -> float:

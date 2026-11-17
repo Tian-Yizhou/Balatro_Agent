@@ -46,6 +46,12 @@ Notable changes to this project. The format follows
 - All 18 Spectral cards, including The Soul and Black Hole from packs.
 - The legendary jokers Canio, Triboulet, Yorick and Perkeo.
 - `PackOpened`, `PackPicked`, `PackSkipped` and `PlayingCardCreated` events.
+- All 32 vouchers: one for sale in each ante's shops until it is redeemed, with
+  the `redeem_voucher` action, and a new one after each boss.
+- Playing cards for sale in the shop with Magic Trick and Illusion (ADR 0005).
+- The `reroll_boss` action at blind selection, with Director's Cut or Retcon
+  (ADR 0004).
+- `VoucherRedeemed` and `BossRerolled` events.
 
 ### Changed
 

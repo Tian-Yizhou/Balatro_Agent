@@ -31,10 +31,18 @@ Covered so far:
 - the shop: item pools (`get_current_pool`), prices, lasting joker effects, rerolls
   and selling;
 - opening every booster pack (`Card:open`): its size, choices and price, the kinds
-  of cards it holds, and which of them can be picked (`G.FUNCS.can_select_card`).
+  of cards it holds, and which of them can be picked (`G.FUNCS.can_select_card`),
+  with Omen Globe and Telescope;
+- redeeming every voucher (`G.FUNCS.can_redeem` and `Card:redeem`): the run's
+  numbers, money and prices afterwards, and the vouchers left to offer;
+- the boss reroll button (`G.FUNCS.reroll_boss_button` and `G.FUNCS.reroll_boss`);
+- playing cards for sale with Magic Trick and Illusion (`create_card_for_shop`),
+  their prices, and buying one (`G.FUNCS.buy_from_shop`);
+- Planet cards held with Observatory, in the scoring check.
 
 The rule checks live in `rules.py`, with the stand-ins in `game_env.lua` and the
-random situations in `scoring_scenarios.py` and `consumable_scenarios.py`. Where
+random situations in `scoring_scenarios.py`, `consumable_scenarios.py` and
+`voucher_scenarios.py`. Where
 the game draws something random (the Emperor's cards, Sigil's suit, the cards in a
 pack), what must hold whatever the draw is compared instead: the kind and number of
 cards, one suit for the whole hand, and so on, since the engine's random draws

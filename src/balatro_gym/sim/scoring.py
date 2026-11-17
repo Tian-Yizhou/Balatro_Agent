@@ -5,8 +5,9 @@
 3. Each scoring card scores from left to right, once per retrigger: its own chips,
    mult, x-mult, money and edition, then each joker's ``individual`` effect.
 4. Each card held in hand applies its effects, with retriggers.
-5. Each joker applies its edition, its main effect and other jokers' reactions
-   to it (``other_joker``), from left to right.
+5. Each joker, then each consumable, applies its edition, its main effect and
+   other jokers' reactions to it (``other_joker``), from left to right. The only
+   consumable with a main effect is a Planet card with Observatory.
 6. Cards are destroyed where needed (Glass Card, some jokers).
 7. The score is added, and jokers react ``after`` scoring.
 
@@ -21,6 +22,7 @@ from typing import Protocol
 
 from .blinds import lua_floor
 from .cards import STONE
+from .content import CENTERS
 from .effects import Area, Context, ContextKind, Effect, calculate_joker, find_joker
 from .events import (
     CardDestroyed,
@@ -42,7 +44,7 @@ from .modifiers import (
     scoring_x_mult,
 )
 from .scope import Scope
-from .state import HandType, Item, PlayingCard
+from .state import HandType, Item, PlayingCard, RunState
 
 __all__ = ["GLASS", "evaluate_play", "level_up_hand", "poker_hands"]
 
@@ -137,6 +139,8 @@ def evaluate_play(scope: Scope, played: list[PlayingCard]) -> list[PlayingCard]:
         _score_held_card(scope, card, score, make_context)
     for joker in list(state.jokers):
         _score_joker(scope, joker, score, make_context)
+    for consumable in list(state.consumables):
+        _score_joker(scope, consumable, score, make_context, consumable=True)
 
     for card in scoring:
         is_destroyed = False
@@ -305,9 +309,15 @@ def _score_held_card(
 
 
 def _score_joker(
-    scope: Scope, joker: Item, score: _RunningScore, make_context: _ContextFactory
+    scope: Scope,
+    joker: Item,
+    score: _RunningScore,
+    make_context: _ContextFactory,
+    *,
+    consumable: bool = False,
 ) -> None:
-    """Apply a joker's edition, its main effect, and other jokers' reactions to it."""
+    """Apply a joker's (or consumable's) edition, its main effect, and other
+    jokers' reactions to it."""
     state = scope.state
     chips, mult, x_mult = edition_effect(joker.edition, joker.debuffed)
     if chips or mult:
@@ -315,7 +325,11 @@ def _score_joker(
         score.mult += mult
         _emit_edition(scope, joker.uid, joker.edition or "", None, (chips, mult, 1))
 
-    effect = calculate_joker(scope, joker, make_context(ContextKind.JOKER_MAIN))
+    context = make_context(ContextKind.JOKER_MAIN)
+    if consumable:
+        effect = _observatory(state, joker, context)
+    else:
+        effect = calculate_joker(scope, joker, context)
     if effect is not None:
         _apply_joker_effect(scope, effect, score)
     for other in list(state.jokers):
@@ -328,6 +342,18 @@ def _score_joker(
     if x_mult != 1:
         score.mult *= x_mult
         _emit_edition(scope, joker.uid, joker.edition or "", None, (0, 0, x_mult))
+
+
+def _observatory(state: RunState, planet: Item, context: Context) -> Effect | None:
+    """With Observatory, a Planet card held gives x-mult to the hand it levels up.
+
+    Source: card.lua ``Card:calculate_joker`` (the Planet set).
+    """
+    if "v_observatory" not in state.used_vouchers or planet.debuffed:
+        return None
+    if CENTERS[planet.key].config.get("hand_type") != context.scoring_name:
+        return None
+    return Effect(x_mult=CENTERS["v_observatory"].config["extra"], source=planet)
 
 
 def _apply_joker_effect(scope: Scope, effect: Effect, score: _RunningScore) -> None:
