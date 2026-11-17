@@ -61,7 +61,8 @@ end
 local Area = {}
 Area.__index = Area
 function harness.area(kind, limit)
-  return setmetatable({cards = {}, highlighted = {}, T = {x = 0, y = 0, w = 1, h = 1},
+  local frame = {x = 0, y = 0, w = 1, h = 1}
+  return setmetatable({cards = {}, highlighted = {}, T = frame, VT = frame,
     config = {type = kind, card_limit = limit or 1000}}, Area)
 end
 function Area:emplace(card) table.insert(self.cards, card); card.area = self end
@@ -197,21 +198,33 @@ end
 function harness_add(area_name, card)
   G[area_name]:emplace(card)
   if card.playing_card then table.insert(G.playing_cards, card) end
+  -- A Negative joker or consumable brings its own slot (Card:add_to_deck).
+  if card.edition and card.edition.negative and (area_name == "jokers" or area_name == "consumeables") then
+    G[area_name].config.card_limit = G[area_name].config.card_limit + 1
+  end
 end
 
--- Visual card methods. Destroying a card only marks it, as the game's own
--- removal happens through dissolve animations.
+-- Visual card methods. A destroyed card is removed in a queued event, as the game
+-- does once its dissolve animation ends, and the removal undoes its lasting
+-- effects as Card:remove does.
 function Card:set_sprites()
   self.children.center = self.children.center or harness.anything
   self.children.back = self.children.back or harness.anything
 end
 for _, name in ipairs({"juice_up", "update_alert", "start_materialize", "flip", "hard_set_T",
-  "calculate_parrallax", "highlight", "set_card_area"}) do
+  "calculate_parrallax", "highlight", "set_card_area", "explode"}) do
   Card[name] = harness.noop
 end
-function Card:start_dissolve() self.harness_destroyed = true; if self.area then self.area:remove_card(self) end end
-function Card:shatter() self.harness_destroyed = true; if self.area then self.area:remove_card(self) end end
-function Card:remove() self.harness_removed = true; if self.area then self.area:remove_card(self) end end
+function Card:remove()
+  self.harness_removed = true
+  if self.area then self.area:remove_card(self) end
+  if self.added_to_deck then self:remove_from_deck() end
+end
+function Card:start_dissolve()
+  self.harness_destroyed = true
+  G.E_MANAGER:add_event(Event({func = function() self:remove(); return true end}))
+end
+Card.shatter = Card.start_dissolve
 
 -- The game's ease_* functions update the HUD as well; these keep only the state
 -- change and its timing (queued, unless ``instant``).
@@ -243,7 +256,10 @@ harness_anything = harness.anything
 getmetatable(harness.anything).__newindex = function() end
 getmetatable(harness.anything).__index = function() return harness.anything end
 getmetatable(harness.anything).__call = function() return harness.anything end
-G.HUD, G.HUD_blind, G.ROOM = harness.anything, harness.anything, harness.anything
+G.HUD, G.HUD_blind = harness.anything, harness.anything
+-- The room's size is read when a booster pack's cards are laid out.
+G.ROOM = setmetatable({T = {x = 0, y = 0, w = 20, h = 11.5}},
+  {__index = function() return harness.anything end})
 G.CONTROLLER = setmetatable({locked = false, locks = {}, interrupt = {}},
   {__index = function() return harness.anything end})
 

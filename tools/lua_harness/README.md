@@ -25,14 +25,20 @@ Covered so far:
 - the game's own scoring (`G.FUNCS.evaluate_play`), round end (`end_round` and
   `G.FUNCS.evaluate_round`) and discards (`G.FUNCS.discard_cards_from_highlighted`),
   run on random situations with jokers, enhancements, editions and seals;
-- using every Planet and Tarot card (`Card:can_use_consumeable` and
-  `Card:use_consumeable`), and the shop: item pools (`get_current_pool`), prices,
-  lasting joker effects, rerolls and selling.
+- using every Planet, Tarot and Spectral card (`Card:can_use_consumeable`,
+  `Card:check_use` and `Card:use_consumeable`), from the consumable slots, the shop
+  or an open pack;
+- the shop: item pools (`get_current_pool`), prices, lasting joker effects, rerolls
+  and selling;
+- opening every booster pack (`Card:open`): its size, choices and price, the kinds
+  of cards it holds, and which of them can be picked (`G.FUNCS.can_select_card`).
 
 The rule checks live in `rules.py`, with the stand-ins in `game_env.lua` and the
 random situations in `scoring_scenarios.py` and `consumable_scenarios.py`. Where
-the game draws a random card (the Emperor, a Purple Seal), the kind and number of
-cards are compared, since the engine's random draws differ from the game's.
+the game draws something random (the Emperor's cards, Sigil's suit, the cards in a
+pack), what must hold whatever the draw is compared instead: the kind and number of
+cards, one suit for the whole hand, and so on, since the engine's random draws
+differ from the game's.
 
 `game_env.lua` replaces the game's graphics, sound, input and save code with
 stand-ins and keeps its event queue, so the rule code runs unchanged.

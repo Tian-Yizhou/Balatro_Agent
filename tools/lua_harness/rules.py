@@ -15,6 +15,7 @@ __all__ = [
     "LuaRules",
     "discard",
     "end_of_round",
+    "open_pack",
     "score",
     "shop",
     "use_consumable",
@@ -383,7 +384,12 @@ def discard(rules: LuaRules, scenario: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-_STATES = {"selecting_hand": "SELECTING_HAND", "shop": "SHOP", "blind_select": "BLIND_SELECT"}
+_STATES = {
+    "selecting_hand": "SELECTING_HAND",
+    "shop": "SHOP",
+    "blind_select": "BLIND_SELECT",
+    "pack_open": "SPECTRAL_PACK",
+}
 _RANK_IDS = {"Jack": 11, "Queen": 12, "King": 13, "Ace": 14}
 
 
@@ -405,8 +411,10 @@ def use_consumable(rules: LuaRules, scenario: dict[str, Any]) -> dict[str, Any]:
     """Use a consumable with the game's own ``use_consumeable``.
 
     The scenario gives the hand and the selected positions, the consumable and
-    any other consumables and jokers owned, the phase and the money. Returns
-    whether the game allows the use and, if it does, everything the use changed.
+    any other consumables and jokers owned, the phase and the money. In the
+    ``pack_open`` phase the consumable is picked from an open Spectral pack.
+    Returns whether the game allows the use and, if it does, everything the use
+    changed.
     """
     rules.new_game(
         dollars=scenario["dollars"],
@@ -435,15 +443,23 @@ def use_consumable(rules: LuaRules, scenario: dict[str, Any]) -> dict[str, Any]:
     for position, other in enumerate(scenario.get("consumables", [])):
         rules.add("consumeables", rules.item(500 + position, other))
     used = rules.item(999, scenario["consumable"])
-    rules.add("consumeables", used)
+    from_pack = scenario["phase"] == "pack_open"
+    if from_pack:
+        globals_.G.pack_cards = globals_.harness.area("pack")
+        rules.add("pack_cards", used)
+    else:
+        rules.add("consumeables", used)
     rules.run_events()
     # The game refreshes derived values (selection limits, Temperance's payout,
     # the Wheel of Fortune's targets) in its per-frame update.
     used.update(used, 0)
-    if not used.can_use_consumeable(used):
+    # G.FUNCS.use_card also refuses a use that Card:check_use rejects (Ankh with
+    # full joker slots).
+    if not used.can_use_consumeable(used) or used.check_use(used):
         return {"usable": False}
-    globals_.G.consumeables.remove_card(globals_.G.consumeables, used)
-    used.use_consumeable(used, globals_.G.consumeables)
+    area = globals_.G.pack_cards if from_pack else globals_.G.consumeables
+    area.remove_card(area, used)
+    used.use_consumeable(used, area)
     for item in rules.area("jokers"):
         item.calculate_joker(item, rules.table({"using_consumeable": True, "consumeable": used}))
     rules.run_events()
@@ -453,6 +469,7 @@ def use_consumable(rules: LuaRules, scenario: dict[str, Any]) -> dict[str, Any]:
         "hand": [_describe_card(card) for card in rules.area("hand")],
         "levels": {name: int(levels[name].level) for name in sorted(levels)},
         "dollars": int(game.dollars),
+        "hand_size": int(globals_.G.hand.config.card_limit),
         "consumables": [item.config.center.key for item in rules.area("consumeables")],
         "jokers": [
             {"key": item.config.center.key, "edition": bool(item.edition)}
@@ -561,4 +578,77 @@ def shop(rules: LuaRules, scenario: dict[str, Any]) -> dict[str, Any]:
             for joker, item in zip(scenario["jokers"], jokers, strict=True)
             if item.ID in remaining
         },
+    }
+
+
+_PACK_STATES = {
+    "TAROT_PACK": "Arcana",
+    "PLANET_PACK": "Celestial",
+    "SPECTRAL_PACK": "Spectral",
+    "STANDARD_PACK": "Standard",
+    "BUFFOON_PACK": "Buffoon",
+}
+
+
+def open_pack(rules: LuaRules, scenario: dict[str, Any]) -> dict[str, Any]:
+    """Open a booster pack in the shop with the game's own ``Card:open``.
+
+    The scenario gives the pack, the ante, the money and the jokers owned. For
+    Arcana and Spectral packs the hand the game draws is ``held``. Returns the
+    pack phase, the number of choices, the money left, the cards created and
+    whether the game lets each one be picked.
+    """
+    rules.new_game(
+        dollars=scenario["dollars"],
+        probability=1,
+        hands_left=4,
+        discards_left=3,
+        ante=scenario["ante"],
+        seed=scenario["seed"],
+    )
+    globals_ = rules.globals
+    game = globals_.G
+    game.STATE = game.STATES.SHOP
+    game.pack_cards = globals_.harness.area("pack")
+    for position, joker in enumerate(scenario["jokers"]):
+        item = rules.item(100 + position, joker["key"], edition=joker.get("edition"))
+        rules.add("jokers", item)
+    pack = rules.item(900, scenario["pack"])
+    pack.open(pack)
+    rules.run_events()
+    state_names = {int(number): name for name, number in game.STATES.items()}
+    kind = _PACK_STATES[state_names[int(game.STATE)]]
+    if kind in ("Arcana", "Spectral"):
+        # Game:update_arcana_pack draws the hand once the pack is open.
+        for position, card in enumerate(scenario["held"]):
+            rules.add("hand", _playing_card(rules, card, position))
+    cards = rules.area("pack_cards")
+    pickable = []
+    for card in cards:
+        if card.ability.consumeable:
+            # The per-frame update refreshes the lists of eligible jokers.
+            card.update(card, 0)
+            pickable.append(bool(card.can_use_consumeable(card)) and not card.check_use(card))
+        else:
+            button = rules.table({"config": {"ref_table": card}})
+            game.FUNCS.can_select_card(button)
+            pickable.append(button.config.button == "use_card")
+    return {
+        "kind": kind,
+        "choices": int(game.GAME.pack_choices),
+        "size": int(game.GAME.pack_size),
+        "dollars": int(game.GAME.dollars),
+        "cards": [_describe_pack_card(card) for card in cards],
+        "pickable": pickable,
+    }
+
+
+def _describe_pack_card(card: Any) -> dict[str, Any]:
+    if card.ability.set in ("Default", "Enhanced"):
+        return {"set": "Playing", **_describe_card(card)}
+    edition = card.edition and card.edition.type
+    return {
+        "set": str(card.ability.set),
+        "key": str(card.config.center.key),
+        "edition": f"e_{edition}" if edition else None,
     }

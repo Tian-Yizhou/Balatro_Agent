@@ -37,7 +37,11 @@ __all__ = [
     "JokerDestroyed",
     "JokerMoved",
     "MoneyChanged",
+    "PackOpened",
+    "PackPicked",
+    "PackSkipped",
     "PhaseChanged",
+    "PlayingCardCreated",
     "RoundEnded",
     "RunEnded",
     "ShopRerolled",
@@ -258,6 +262,43 @@ class ConsumableUsed(Event):
 
 
 @dataclass(frozen=True, slots=True)
+class PlayingCardCreated(Event):
+    """A new playing card was added to ``area``: the hand, the deck or a pack."""
+
+    kind: ClassVar[str] = "playing_card_created"
+    uid: int
+    label: str
+    area: str
+
+
+@dataclass(frozen=True, slots=True)
+class PackOpened(Event):
+    """A booster pack was opened; ``cards`` are the uids of what it holds."""
+
+    kind: ClassVar[str] = "pack_opened"
+    uid: int
+    key: str
+    cards: tuple[int, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class PackPicked(Event):
+    """A card was taken from the open pack: used, or added to the jokers or deck.
+
+    ``name`` is the item's key, or the playing card's label such as ``"AS"``.
+    """
+
+    kind: ClassVar[str] = "pack_picked"
+    uid: int
+    name: str
+
+
+@dataclass(frozen=True, slots=True)
+class PackSkipped(Event):
+    kind: ClassVar[str] = "pack_skipped"
+
+
+@dataclass(frozen=True, slots=True)
 class ShopRerolled(Event):
     kind: ClassVar[str] = "shop_rerolled"
     cost: int
@@ -292,6 +333,10 @@ EVENT_TYPES: dict[str, type[Event]] = {
         ItemCreated,
         ConsumableUsed,
         ShopRerolled,
+        PlayingCardCreated,
+        PackOpened,
+        PackPicked,
+        PackSkipped,
     )
 }
 

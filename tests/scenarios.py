@@ -10,8 +10,11 @@ from typing import Any
 from balatro_gym.sim import Game, macros
 from balatro_gym.sim.actions import (
     Action,
+    BuyPack,
+    CashOut,
     ContinueEndless,
     Discard,
+    Pick,
     Reroll,
     SelectBlind,
     SellJoker,
@@ -25,6 +28,7 @@ from balatro_gym.sim.hands import display_name, evaluate_poker_hand
 from balatro_gym.sim.inventory import add_to_deck, remove_from_deck
 from balatro_gym.sim.items import new_item, set_cost
 from balatro_gym.sim.modifiers import scoring_chips
+from balatro_gym.sim.packs import pack_kind
 from balatro_gym.sim.scope import Scope
 from balatro_gym.sim.scoring import evaluate_play, level_up_hand
 from balatro_gym.sim.shop import is_available
@@ -32,8 +36,11 @@ from balatro_gym.sim.state import (
     BlindSlot,
     BlindState,
     HandType,
+    Item,
+    OpenPack,
     Phase,
     PlayingCard,
+    RunConfig,
     RunState,
     Suit,
 )
@@ -85,6 +92,26 @@ def started_round(seed: str | int = "test") -> Game:
     game = Game.new(seed)
     game.step(SelectBlind())
     return game
+
+
+def in_shop(seed: str = "shop", config: RunConfig | None = None) -> Game:
+    """A game standing in the shop after winning the small blind."""
+    game = Game.new(seed, config)
+    game.step(SelectBlind())
+    state = game.state
+    assert state.blind is not None
+    state.blind.chips = 1
+    for action in macros.play_cards(state, [0]):
+        game.step(action)
+    game.step(CashOut())
+    assert state.phase is Phase.SHOP
+    return game
+
+
+def give(state: RunState, key: str) -> Item:
+    item = new_item(state, key)
+    (state.jokers if CENTERS[key].is_joker else state.consumables).append(item)
+    return item
 
 
 def set_hand(state: RunState, labels: str) -> list[PlayingCard]:
@@ -376,9 +403,23 @@ def engine_use_consumable(scenario: dict[str, Any]) -> dict[str, Any]:
         jokers.append(item)
     state.jokers = list(jokers)
     others = [new_item(state, key) for key in scenario.get("consumables", [])]
-    state.consumables = [*others, new_item(state, scenario["consumable"])]
+    used = new_item(state, scenario["consumable"])
+    action: Action
+    if state.phase is Phase.PACK_OPEN:
+        # Picked from a Spectral pack that stays open, so the hand stays in view.
+        state.consumables = others
+        state.pack = OpenPack(
+            key="p_spectral_mega_1",
+            items=[used, new_item(state, "c_pluto")],
+            playing_cards=[],
+            choices_left=2,
+            return_phase=Phase.SHOP,
+        )
+        action = Pick(0)
+    else:
+        state.consumables = [*others, used]
+        action = UseConsumable(len(state.consumables) - 1)
     game = Game(state)
-    action = UseConsumable(len(state.consumables) - 1)
     if not game.is_legal(action):
         return {"usable": False}
     game.step(action)
@@ -397,6 +438,7 @@ def engine_use_consumable(scenario: dict[str, Any]) -> dict[str, Any]:
         ],
         "levels": {hand.value: level.level for hand, level in state.hands.items()},
         "dollars": state.money,
+        "hand_size": state.hand_size,
         "consumables": [item.key for item in state.consumables],
         "jokers": [{"key": item.key, "edition": item.edition is not None} for item in state.jokers],
         "joker_values": [dict(item.values) for item in jokers],
@@ -404,9 +446,66 @@ def engine_use_consumable(scenario: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-#: Consumables that create random cards: only the kind and count of the created
-#: cards are compared, since the engine's random draws differ from the game's.
-RANDOM_CREATORS = frozenset({"c_emperor", "c_high_priestess", "c_judgement", "c_wheel_of_fortune"})
+#: Consumables that create or change random items: only the kind and count of the
+#: items are compared, since the engine's random draws differ from the game's.
+RANDOM_CREATORS = frozenset(
+    {
+        "c_emperor",
+        "c_high_priestess",
+        "c_judgement",
+        "c_wheel_of_fortune",
+        "c_wraith",
+        "c_soul",
+        "c_ankh",
+        "c_hex",
+        "c_ectoplasm",
+    }
+)
+
+#: Of those, the ones whose jokers are compared by rarity: a rare or a legendary.
+_BY_RARITY = frozenset({"c_wraith", "c_soul"})
+
+#: Consumables whose resulting joker editions depend on which joker was drawn.
+_RANDOM_EDITIONS = frozenset({"c_judgement", "c_wraith", "c_soul", "c_ankh"})
+
+#: Ranks the card-creating Spectral cards may add.
+_CREATED_RANKS = {"c_familiar": {11, 12, 13}, "c_grim": {14}, "c_incantation": set(range(2, 11))}
+
+
+def _hand_outline(key: str, scenario: dict[str, Any], hand: list[dict[str, Any]]) -> Any:
+    """What a consumable's effect on the hand must give, whatever its random draws.
+
+    Effects without randomness are compared card by card. Sigil and Ouija must
+    give every card one suit or one rank, Aura some edition, and Cryptid exact
+    copies with new uids. Familiar, Grim and Incantation must destroy one card
+    and add cards of their ranks with an enhancement other than Stone; Immolate
+    destroys up to five cards.
+    """
+    originals = {card["uid"] for card in scenario["held"]}
+    kept = [card for card in hand if card["uid"] in originals]
+    created = [card for card in hand if card["uid"] not in originals]
+    if key in ("c_sigil", "c_ouija"):
+        field = "suit" if key == "c_sigil" else "rank"
+        others = [{name: value for name, value in card.items() if name != field} for card in hand]
+        return others, len({card[field] for card in hand}) <= 1
+    if key == "c_aura":
+        return [{**card, "edition": card["edition"] is not None} for card in hand]
+    if key == "c_cryptid":
+        return kept, [
+            {name: value for name, value in card.items() if name != "uid"} for card in created
+        ]
+    if key in _CREATED_RANKS:
+        valid = all(
+            card["rank"] in _CREATED_RANKS[key]
+            and card["enhancement"] not in (None, "m_stone")
+            and card["edition"] is None
+            and card["seal"] is None
+            for card in created
+        )
+        return len(kept), len(created), valid
+    if key == "c_immolate":
+        return len(kept), len(created)
+    return hand
 
 
 def compare_consumable_use(
@@ -417,15 +516,24 @@ def compare_consumable_use(
         return [f"usable {ours['usable']} vs {game['usable']}"]
     if not game["usable"]:
         return []
+    key = scenario["consumable"]
     problems = [
         f"{field} {ours[field]} vs {game[field]}"
-        for field in ("hand", "levels", "dollars", "last_tarot_planet")
+        for field in ("levels", "dollars", "hand_size", "last_tarot_planet")
         if ours[field] != game[field]
     ]
-    random_creation = scenario["consumable"] in RANDOM_CREATORS
+    if _hand_outline(key, scenario, ours["hand"]) != _hand_outline(key, scenario, game["hand"]):
+        problems.append(f"hand {ours['hand']} vs {game['hand']}")
+    random_creation = key in RANDOM_CREATORS
+
+    def describe_joker(joker: dict[str, Any]) -> str:
+        if key in _BY_RARITY:
+            return f"rarity {CENTERS[joker['key']].rarity}"
+        return "joker" if random_creation else joker["key"]
+
     for field, describe in (
-        ("consumables", lambda key: CENTERS[key].set if random_creation else key),
-        ("jokers", lambda joker: joker["key"] if not random_creation else "joker"),
+        ("consumables", lambda item: CENTERS[item].set if random_creation else item),
+        ("jokers", describe_joker),
     ):
         mine = sorted(map(describe, ours[field]))
         theirs = sorted(map(describe, game[field]))
@@ -433,11 +541,12 @@ def compare_consumable_use(
             problems.append(f"{field} {mine} vs {theirs}")
     our_editions = [joker["edition"] for joker in ours["jokers"]]
     game_editions = [joker["edition"] for joker in game["jokers"]]
-    if scenario["consumable"] in RANDOM_CREATORS:
-        # The Wheel of Fortune picks a random joker, and Judgement's joker may
-        # roll an edition: compare how many jokers have one.
+    if random_creation:
+        # The Wheel of Fortune, Hex and Ectoplasm pick a random joker: compare how
+        # many jokers have an edition. A created or copied joker's edition depends
+        # on which joker it is.
         our_editions, game_editions = [sum(our_editions)], [sum(game_editions)]
-        if scenario["consumable"] == "c_judgement":
+        if key in _RANDOM_EDITIONS:
             our_editions = game_editions
     if our_editions != game_editions:
         problems.append(f"joker editions {ours['jokers']} vs {game['jokers']}")
@@ -524,4 +633,77 @@ def compare_shop(ours: dict[str, Any], game: dict[str, Any], implemented: set[st
         if ours[field] != game[field]:
             problems.append(f"{field} {ours[field]} vs {game[field]}")
     problems.extend(_compare_jokers(ours["jokers"], game["jokers"], None))
+    return problems
+
+
+def engine_open_pack(scenario: dict[str, Any], game_cards: list[dict[str, Any]]) -> dict[str, Any]:
+    """Open a pack in the engine; report what ``rules.open_pack`` does.
+
+    Which cards can be picked is checked on the cards the game created
+    (``game_cards``), with the same hand, since the engine's random cards differ.
+    """
+    state = new_run(scenario["seed"])
+    state.ante = scenario["ante"]
+    state.money = scenario["dollars"]
+    state.phase = Phase.SHOP
+    for joker in scenario["jokers"]:
+        state.jokers.append(new_item(state, joker["key"], edition=joker.get("edition")))
+    state.shop_boosters = [new_item(state, scenario["pack"])]
+    game = Game(state)
+    game.step(BuyPack(0))
+    pack = state.pack
+    assert pack is not None
+    result: dict[str, Any] = {
+        "kind": pack_kind(pack.key),
+        "choices": pack.choices_left,
+        "size": pack.size,
+        "dollars": state.money,
+        "cards": [
+            {"set": CENTERS[item.key].set, "key": item.key, "edition": item.edition}
+            for item in pack.items
+        ]
+        + [
+            {"set": "Playing", "enhancement": card.enhancement, "edition": card.edition}
+            for card in pack.playing_cards
+        ],
+    }
+    if state.hand:
+        state.deck.extend(state.hand)
+        state.hand = [_scenario_card(card) for card in scenario["held"]]
+    if pack.items:
+        pack.items = [new_item(state, card["key"], edition=card["edition"]) for card in game_cards]
+    result["pickable"] = [game.is_legal(Pick(i)) for i in range(pack.size)]
+    return result
+
+
+def compare_open_pack(ours: dict[str, Any], game: dict[str, Any]) -> list[str]:
+    """Differences between opening a pack in the engine and in the game.
+
+    The cards are random, so only their kinds are compared, with The Soul and
+    Black Hole, which may stand in for any card of a pack, set aside. Playing
+    cards must have a valid enhancement and no Negative edition.
+    """
+    problems = [
+        f"{field} {ours[field]} vs {game[field]}"
+        for field in ("kind", "choices", "size", "dollars", "pickable")
+        if ours[field] != game[field]
+    ]
+
+    def kinds(cards: list[dict[str, Any]]) -> list[str]:
+        return sorted(
+            card["set"] for card in cards if card.get("key") not in ("c_soul", "c_black_hole")
+        )
+
+    enhancements = {center.key for center in pool("Enhanced")}
+    for side, cards in (("engine", ours["cards"]), ("game", game["cards"])):
+        for card in cards:
+            if card["set"] == "Playing" and (
+                card["enhancement"] not in (None, *enhancements) or card["edition"] == "e_negative"
+            ):
+                problems.append(f"{side} made an invalid playing card {card}")
+    souls = sum(card.get("key") in ("c_soul", "c_black_hole") for card in ours["cards"])
+    game_souls = sum(card.get("key") in ("c_soul", "c_black_hole") for card in game["cards"])
+    our_kinds, game_kinds = kinds(ours["cards"]), kinds(game["cards"])
+    if souls == game_souls and our_kinds != game_kinds:
+        problems.append(f"cards {our_kinds} vs {game_kinds}")
     return problems

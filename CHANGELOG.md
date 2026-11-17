@@ -40,6 +40,12 @@ Notable changes to this project. The format follows
   size, discards, money limits and rerolls while owned.
 - Run options `endless` and `max_ante`.
 - An engine throughput benchmark in `tools/bench/`.
+- Booster packs: two in every shop (the first a Buffoon pack), all five kinds in
+  every size, and the pack phase with the `buy_pack`, `pick` and `skip_pack`
+  actions. Arcana and Spectral packs draw a hand to use their cards on.
+- All 18 Spectral cards, including The Soul and Black Hole from packs.
+- The legendary jokers Canio, Triboulet, Yorick and Perkeo.
+- `PackOpened`, `PackPicked`, `PackSkipped` and `PlayingCardCreated` events.
 
 ### Changed
 

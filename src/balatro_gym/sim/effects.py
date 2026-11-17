@@ -68,6 +68,9 @@ class ContextKind(StrEnum):
     REROLL_SHOP = "reroll_shop"
     ENDING_SHOP = "ending_shop"
     USING_CONSUMABLE = "using_consumeable"
+    OPEN_BOOSTER = "open_booster"
+    SKIPPING_BOOSTER = "skipping_booster"
+    PLAYING_CARD_ADDED = "playing_card_added"
 
 
 class Area(StrEnum):
@@ -102,7 +105,10 @@ class Context:
     end_of_round: bool = False
     game_over: bool = False
     removed: Sequence[PlayingCard] = ()
-    #: The card bought or sold (``context.card``), or the consumable used.
+    #: Playing cards just added to the deck (``playing_card_added``).
+    cards: Sequence[PlayingCard] = ()
+    #: The card bought or sold (``context.card``), the consumable used, or the
+    #: booster pack opened.
     card: Item | None = None
     blueprint: int = 0
     blueprint_card: Item | None = None
